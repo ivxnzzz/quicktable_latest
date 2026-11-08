@@ -4,6 +4,11 @@ Search, filter and edit vector-layer attributes in QGIS, including tables withou
 
 **Version:** 1.00 (experimental) | **Author:** Iven Paul Rolloque
 
+![QuickTable interface showing attribute filters and column statistics](https://raw.githubusercontent.com/ivxnzzz/quicktable_latest/main/docs/images/quicktable-interface.png)
+
+Sample data: Philippine PSGC administrative boundaries from
+[altcoder/philippines-psgc-shapefiles](https://github.com/altcoder/philippines-psgc-shapefiles).
+
 ## Features
 
 - Search across fields and filter columns by values, text, ranges or empty values.
@@ -46,6 +51,7 @@ Repository layout:
 ```text
 quicktable/     Plugin implementation
 icons/          PNG and SVG assets
+docs/images/    README screenshots
 tests/          Regression and QGIS integration tests
 tools/          Release packaging script
 dist/           Built ZIP (ignored by Git)
