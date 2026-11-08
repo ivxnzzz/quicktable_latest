@@ -19,7 +19,7 @@ class ClickableCheckList(QListWidget):
 
     def mousePressEvent(self, event):
         item = self.itemAt(event.pos())
-        if event.button() == Qt.LeftButton and item is not None and item.flags() & Qt.ItemIsUserCheckable:
+        if event.button() == Qt.MouseButton.LeftButton and item is not None and item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
             self.pressed_item = item
             self.setCurrentItem(item)
             event.accept()
@@ -31,9 +31,9 @@ class ClickableCheckList(QListWidget):
         item = self.itemAt(event.pos())
         pressed = self.pressed_item
         self.pressed_item = None
-        if event.button() == Qt.LeftButton and pressed is not None:
-            if item is pressed and item.flags() & Qt.ItemIsEnabled:
-                item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+        if event.button() == Qt.MouseButton.LeftButton and pressed is not None:
+            if item is pressed and item.flags() & Qt.ItemFlag.ItemIsEnabled:
+                item.setCheckState(Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -48,15 +48,15 @@ class CheckableValueCombo(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setEditable(True)
-        self.setInsertPolicy(QComboBox.NoInsert)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.selected_values = []
         self.checkable = False
         self.value_kind = "text"
         self.checkbox_popup = None
         self.normal_completer = QCompleter(self.model(), self)
-        self.normal_completer.setCaseSensitivity(Qt.CaseInsensitive)
-        self.normal_completer.setFilterMode(Qt.MatchContains)
-        self.normal_completer.setCompletionMode(QCompleter.PopupCompletion)
+        self.normal_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.normal_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.normal_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self.lineEdit().textEdited.connect(self.clear_checks_for_typing)
 
     def enable_checkboxes(self, enabled):
@@ -113,9 +113,9 @@ class CheckableValueCombo(QComboBox):
 
 class ValuePopup(QFrame):
     def __init__(self, combo, embedded=False):
-        super().__init__(combo, Qt.Widget if embedded else Qt.Popup)
+        super().__init__(combo, Qt.WindowType.Widget if embedded else Qt.WindowType.Popup)
         self.setObjectName("valuePopup")
-        self.setAttribute(Qt.WA_NoMouseReplay, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay, True)
         self.combo = combo
         self.items = {}
         layout = QVBoxLayout(self)
@@ -165,12 +165,12 @@ class ValuePopup(QFrame):
                 if value not in self.items:
                     text = ALL_VALUES if value is None else value if value else "(empty string)"
                     item = QListWidgetItem(text, self.list)
-                    item.setData(Qt.UserRole, value)
-                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    item.setData(Qt.ItemDataRole.UserRole, value)
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     self.items[value] = item
             for value, item in self.items.items():
                 checked = not self.combo.selected_values if value is None else value in self.combo.selected_values
-                item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
         finally:
             self.list.blockSignals(blocked)
         self.filter_items()
@@ -183,11 +183,11 @@ class ValuePopup(QFrame):
         self.use_typed.setVisible(bool(self.search.text()) and self.search.text() not in self.items)
 
     def item_changed(self, item):
-        if item.data(Qt.UserRole) is None:
+        if item.data(Qt.ItemDataRole.UserRole) is None:
             values = []
         else:
             values = [value for value, choice in self.items.items()
-                      if value is not None and choice.checkState() == Qt.Checked]
+                      if value is not None and choice.checkState() == Qt.CheckState.Checked]
         self.combo.set_selected_values(values)
         self.refresh_choices()
 
@@ -229,4 +229,4 @@ class ValuePopup(QFrame):
         self.resize(width, height)
         self.move(x, y)
         self.show()
-        self.search.setFocus(Qt.PopupFocusReason)
+        self.search.setFocus(Qt.FocusReason.PopupFocusReason)

@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from qgis.core import (QgsApplication, QgsExpression, QgsFeature, QgsField, QgsGeometry,
                            QgsProject, QgsFeatureRequest, QgsVectorLayer, QgsVectorLayerFeatureSource)
-    from qgis.PyQt.QtCore import Qt, QVariant, QSettings, QLocale, QPoint
+    from qgis.PyQt.QtCore import Qt, QMetaType, QSettings, QLocale, QPoint, QDate, QTimer
     from qgis.PyQt.QtGui import QFont, QFontDatabase, QFontMetrics
     from qgis.PyQt.QtWidgets import QComboBox, QLineEdit, QAbstractItemView, QDialog
 except ImportError:
@@ -36,6 +36,46 @@ class QgisIntegrationTests(unittest.TestCase):
     def tearDownClass(cls):
         if cls.owns_app:
             cls.app.exitQgis()
+
+    def test_field_types_keep_filter_and_edit_semantics(self):
+        types = QMetaType.Type
+        cases = ((types.Int, "integer"), (types.UInt, "integer"),
+                 (types.LongLong, "integer"), (types.ULongLong, "integer"),
+                 (types.Double, "number"), (types.Bool, "boolean"),
+                 (types.QDate, "date"), (types.QDateTime, "datetime"),
+                 (types.QTime, "time"), (types.QString, "text"))
+        for field_type, expected in cases:
+            with self.subTest(field_type=field_type):
+                self.assertEqual(self.plugin.field_kind(QgsField("value", field_type)), expected)
+        convert = self.plugin.FinderDialog.convert
+        self.assertEqual(convert(QgsField("value", types.QString), " 001 "), " 001 ")
+        self.assertEqual(convert(QgsField("value", types.LongLong), "9007199254740993"), 9007199254740993)
+        self.assertEqual(convert(QgsField("value", types.Double), "1.25"), 1.25)
+        self.assertIs(convert(QgsField("value", types.Bool), "false"), False)
+        self.assertEqual(convert(QgsField("value", types.QDate), "2026-11-08"), QDate(2026, 11, 8))
+
+    def test_settings_exec_accept_and_reject_preserve_save_behavior(self):
+        settings = QSettings()
+        for key in ("fontFamily", "fontSize", "theme", "pinned"):
+            full_key = "LayerFilter/" + key
+            if settings.contains(full_key):
+                self.addCleanup(settings.setValue, full_key, settings.value(full_key))
+            else:
+                self.addCleanup(settings.remove, full_key)
+        finder = self.create_dialog(self.make_layer(1))
+        original_size = finder.font_size
+        chosen_size = 10 if original_size != 10 else 11
+        original_dialog = self.plugin.SettingsDialog
+        for accept in (False, True):
+            def create_settings(*args, accept=accept, **kwargs):
+                dialog = original_dialog(*args, **kwargs)
+                dialog.font_size_spin.setValue(chosen_size)
+                QTimer.singleShot(0, dialog.accept if accept else dialog.reject)
+                return dialog
+
+            with patch.object(self.plugin, "SettingsDialog", side_effect=create_settings):
+                finder.show_settings()
+            self.assertEqual(finder.font_size, chosen_size if accept else original_size)
 
     def test_plugin_connects_shutdown_handler_only_when_creating_dialog(self):
         dialog = Mock()
@@ -115,11 +155,11 @@ class QgisIntegrationTests(unittest.TestCase):
         self.assertIn(QgsExpression.quotedString("%" + edit.text() + "%"), expression)
 
     def test_integer_fields_keep_large_exact_values(self):
-        field = QgsField("id", QVariant.LongLong, "numeric")
+        field = QgsField("id", QMetaType.Type.LongLong, "numeric")
         self.assertEqual(self.plugin.FinderDialog.convert(field, "9007199254740993"), 9007199254740993)
 
     def test_double_field_rejects_precision_loss(self):
-        field = QgsField("value", QVariant.Double, "numeric")
+        field = QgsField("value", QMetaType.Type.Double, "numeric")
         with self.assertRaisesRegex(ValueError, "precision"):
             self.plugin.FinderDialog.convert(field, "9007199254740993")
 
@@ -238,7 +278,7 @@ class QgisIntegrationTests(unittest.TestCase):
         dialog = self.create_dialog(layer)
         dialog.page_size.setCurrentIndex(dialog.page_size.findData(100))
         dialog.open_field_filter("number")
-        dialog.sort_filter_column(dialog.filter_rows[0], Qt.AscendingOrder)
+        dialog.sort_filter_column(dialog.filter_rows[0], Qt.SortOrder.AscendingOrder)
         self.wait_for_results(dialog)
         self.assertEqual([int(dialog.table.item(i, 0).text()) for i in range(100)], list(range(100)))
         dialog.change_page(1)
@@ -255,14 +295,14 @@ class QgisIntegrationTests(unittest.TestCase):
         QgsApplication.processEvents()
         header = dialog.table.horizontalHeader()
         x = header.sectionViewportPosition(0) + min(40, header.sectionSize(0) // 2)
-        QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=QPoint(x, header.height() // 4))
+        QTest.mouseClick(header.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(x, header.height() // 4))
         self.wait_for_results(dialog)
         self.assertEqual(dialog.sort_field, "name")
-        self.assertEqual(dialog.sort_order, Qt.AscendingOrder)
-        QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=QPoint(x, header.height() // 4))
+        self.assertEqual(dialog.sort_order, Qt.SortOrder.AscendingOrder)
+        QTest.mouseClick(header.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(x, header.height() // 4))
         self.wait_for_results(dialog)
-        self.assertEqual(dialog.sort_order, Qt.DescendingOrder)
-        QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=QPoint(x, 3 * header.height() // 4))
+        self.assertEqual(dialog.sort_order, Qt.SortOrder.DescendingOrder)
+        QTest.mouseClick(header.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(x, 3 * header.height() // 4))
         self.assertEqual(len(dialog.filter_rows), 1)
         row = dialog.filter_rows[0]
         self.assertTrue(row.widget.isVisible())
@@ -707,7 +747,7 @@ class QgisIntegrationTests(unittest.TestCase):
             self.assertIn("0 → updated", editor.preview.toPlainText())
             self.assertTrue(editor.apply_button.isEnabled())
             return self.plugin.QDialog.Accepted
-        with patch.object(self.plugin.BulkEditDialog, "exec_", apply_dialog):
+        with patch.object(self.plugin.BulkEditDialog, "exec", apply_dialog):
             dialog.bulk_edit()
         self.assertEqual(layer.getFeature(selected[0])["name"], "updated")
         self.assertEqual(layer.undoStack().count(), 1)
@@ -716,7 +756,7 @@ class QgisIntegrationTests(unittest.TestCase):
 
     def test_bulk_edit_dialog_validates_and_cancel_changes_nothing(self):
         layer = self.make_layer(3)
-        self.assertTrue(layer.dataProvider().addAttributes([QgsField("value", QVariant.Int)]))
+        self.assertTrue(layer.dataProvider().addAttributes([QgsField("value", QMetaType.Type.Int)]))
         layer.updateFields()
         dialog = self.create_dialog(layer)
         dialog.edit_cb.setChecked(True)
@@ -734,7 +774,7 @@ class QgisIntegrationTests(unittest.TestCase):
         self.assertEqual(layer.getFeature(fid)["name"], "0")
 
     def test_autofill_patterns_validate_generated_values(self):
-        field = QgsField("number", QVariant.Int)
+        field = QgsField("number", QMetaType.Type.Int)
         make = self.plugin.FinderDialog.autofill_values
         self.assertEqual(make(field, "sequence", "10", "-2", 4), [10, 8, 6, 4])
         self.assertEqual(make(field, "repeat", "1\n4", "1", 5), [1, 4, 1, 4, 1])
@@ -802,11 +842,11 @@ class QgisIntegrationTests(unittest.TestCase):
             options.mode.setCurrentIndex(options.mode.findData("sequence"))
             options.values.setPlainText("3")
             options.step.setText("2")
-            return QDialog.Accepted
+            return QDialog.DialogCode.Accepted
         def confirm(parent, title, message, *args):
             previews.append(message)
             return self.plugin.QMessageBox.Yes
-        with patch.object(self.plugin.AutofillDialog, "exec_", accept_options), \
+        with patch.object(self.plugin.AutofillDialog, "exec", accept_options), \
              patch.object(self.plugin.QMessageBox, "question", confirm):
             dialog.autofill()
         self.assertEqual([layer.getFeature(fid)[0] for fid in ids], [3, 5, 7])
@@ -830,11 +870,11 @@ class QgisIntegrationTests(unittest.TestCase):
             self.assertEqual(options.scope.currentData(), "page")
             options.mode.setCurrentIndex(options.mode.findData("repeat"))
             options.values.setPlainText("A\nB")
-            return QDialog.Accepted
+            return QDialog.DialogCode.Accepted
         def confirm(parent, title, message, *args):
             previews.append(message)
             return self.plugin.QMessageBox.Yes
-        with patch.object(self.plugin.AutofillDialog, "exec_", accept_options), \
+        with patch.object(self.plugin.AutofillDialog, "exec", accept_options), \
              patch.object(self.plugin.QMessageBox, "question", confirm):
             dialog.autofill()
         self.assertEqual([layer.getFeature(fid)[0] for fid in first_page[:4]], ["A", "B", "A", "B"])
@@ -844,7 +884,7 @@ class QgisIntegrationTests(unittest.TestCase):
         self.assertEqual(layer.getFeature(first_page[0])[0], "0")
 
     def test_add_field_creates_typed_column_as_one_undo(self):
-        for expected_type in (QVariant.LongLong, QVariant.Double):
+        for expected_type in (QMetaType.Type.LongLong, QMetaType.Type.Double):
             with self.subTest(field_type=expected_type):
                 layer = self.make_layer(3)
                 dialog = self.create_dialog(layer)
@@ -852,8 +892,8 @@ class QgisIntegrationTests(unittest.TestCase):
                 def accept_options(options):
                     options.field_type.setCurrentIndex(options.field_type.findData(expected_type))
                     options.name.setText("new_number")
-                    return QDialog.Accepted
-                with patch.object(self.plugin.AddFieldDialog, "exec_", accept_options):
+                    return QDialog.DialogCode.Accepted
+                with patch.object(self.plugin.AddFieldDialog, "exec", accept_options):
                     dialog.add_field()
                 index = layer.fields().indexFromName("new_number")
                 self.assertGreaterEqual(index, 0, dialog.status.text())
@@ -868,11 +908,11 @@ class QgisIntegrationTests(unittest.TestCase):
         dialog.edit_cb.setChecked(True)
         def accept_options(options):
             options.name.setText("amount")
-            options.field_type.setCurrentIndex(options.field_type.findData(QVariant.Double))
+            options.field_type.setCurrentIndex(options.field_type.findData(QMetaType.Type.Double))
             options.length.setValue(12)
             options.precision.setValue(3)
-            return QDialog.Accepted
-        with patch.object(self.plugin.AddFieldDialog, "exec_", accept_options):
+            return QDialog.DialogCode.Accepted
+        with patch.object(self.plugin.AddFieldDialog, "exec", accept_options):
             dialog.add_field()
         index = layer.fields().indexFromName("amount")
         self.assertGreaterEqual(index, 0, dialog.status.text())
@@ -1090,9 +1130,9 @@ class QgisIntegrationTests(unittest.TestCase):
     def test_multi_selection_mode_can_be_toggled(self):
         dialog = self.create_dialog(self.make_layer(3))
         dialog.multi_cb.setChecked(True)
-        self.assertEqual(dialog.table.selectionMode(), QAbstractItemView.MultiSelection)
+        self.assertEqual(dialog.table.selectionMode(), QAbstractItemView.SelectionMode.MultiSelection)
         dialog.multi_cb.setChecked(False)
-        self.assertEqual(dialog.table.selectionMode(), QAbstractItemView.ExtendedSelection)
+        self.assertEqual(dialog.table.selectionMode(), QAbstractItemView.SelectionMode.ExtendedSelection)
 
     def test_column_preferences_preserve_feature_ids_and_export_visible_fields(self):
         layer = QgsVectorLayer("None?field=id:integer&field=name:string", "columns", "memory")
@@ -1159,7 +1199,7 @@ class QgisIntegrationTests(unittest.TestCase):
         dialog = self.create_dialog(layer)
         dialog.edit_cb.setChecked(True)
         self.assertTrue(layer.isEditable())
-        self.assertFalse(dialog.table.item(0, 0).flags() & Qt.ItemIsEditable)
+        self.assertFalse(dialog.table.item(0, 0).flags() & Qt.ItemFlag.ItemIsEditable)
 
     def remember_page_size_preference(self):
         key = "LayerFilter/pageSize"
@@ -1314,15 +1354,15 @@ class QgisIntegrationTests(unittest.TestCase):
             self.assertEqual(settings_dialog.font_delegate.theme, chosen_theme)
             index = settings_dialog.font_picker.model().index(chosen_index, 0)
             self.assertEqual(settings_dialog.font_delegate.preview_font(index).family(), family)
-            return QDialog.Accepted
+            return QDialog.DialogCode.Accepted
 
-        with patch.object(self.plugin.SettingsDialog, "exec_", save):
+        with patch.object(self.plugin.SettingsDialog, "exec", save):
             dialog.show_settings()
         self.assertEqual(dialog.font_family, family)
         self.assertEqual(dialog.font_size, 14)
         self.assertEqual(dialog.theme, chosen_theme)
         self.assertEqual(dialog.pinned, not original_pin)
-        self.assertEqual(bool(dialog.windowFlags() & Qt.WindowStaysOnTopHint), not original_pin)
+        self.assertEqual(bool(dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint), not original_pin)
         self.assertIn("font-size: 14pt", dialog.styleSheet())
         self.assertIn('font-family: "' + family + '"', dialog.styleSheet())
         self.assertGreaterEqual(dialog.table.verticalHeader().defaultSectionSize(), QFontMetrics(QFont(family, 14)).height() + 10)
@@ -1348,9 +1388,9 @@ class QgisIntegrationTests(unittest.TestCase):
             settings_dialog.font_size_spin.setValue(24 if dialog.font_size != 24 else 8)
             settings_dialog.theme_picker.setCurrentIndex(0 if dialog.theme == "dark" else 1)
             settings_dialog.pin_cb.setChecked(not dialog.pinned)
-            return QDialog.Rejected
+            return QDialog.DialogCode.Rejected
 
-        with patch.object(self.plugin.SettingsDialog, "exec_", cancel):
+        with patch.object(self.plugin.SettingsDialog, "exec", cancel):
             dialog.show_settings()
         self.assertEqual((dialog.font_family, dialog.font_size, dialog.theme, dialog.pinned, dialog.styleSheet()), before)
         self.assertEqual([settings.value(key) for key in keys], stored)
@@ -1374,14 +1414,14 @@ class QgisIntegrationTests(unittest.TestCase):
         for row in range(min(3, model.rowCount())):
             index = model.index(row, 0)
             image = QImage(400, 50, QImage.Format_ARGB32)
-            image.fill(Qt.transparent)
+            image.fill(Qt.GlobalColor.transparent)
             painter = TrackingPainter(image)
             try:
                 settings.font_delegate.paint(painter, option, index)
-                self.assertEqual(painter.selected_family, index.data(Qt.DisplayRole))
+                self.assertEqual(painter.selected_family, index.data(Qt.ItemDataRole.DisplayRole))
             finally:
                 painter.end()
-            self.assertEqual(settings.font_delegate.preview_font(index).family(), index.data(Qt.DisplayRole))
+            self.assertEqual(settings.font_delegate.preview_font(index).family(), index.data(Qt.ItemDataRole.DisplayRole))
             self.assertGreater(settings.font_delegate.sizeHint(option, index).height(), 0)
 
     def test_size_arrows_are_visible_and_clickable_in_both_themes(self):
@@ -1397,8 +1437,8 @@ class QgisIntegrationTests(unittest.TestCase):
                 spin = settings.font_size_spin
                 option = QStyleOptionSpinBox()
                 spin.initStyleOption(option)
-                up = spin.style().subControlRect(QStyle.CC_SpinBox, option, QStyle.SC_SpinBoxUp, spin)
-                down = spin.style().subControlRect(QStyle.CC_SpinBox, option, QStyle.SC_SpinBoxDown, spin)
+                up = spin.style().subControlRect(QStyle.ComplexControl.CC_SpinBox, option, QStyle.SubControl.SC_SpinBoxUp, spin)
+                down = spin.style().subControlRect(QStyle.ComplexControl.CC_SpinBox, option, QStyle.SubControl.SC_SpinBoxDown, spin)
                 image = spin.grab().toImage()
                 for rect in (up, down):
                     self.assertGreater(rect.width(), 0)
@@ -1407,9 +1447,9 @@ class QgisIntegrationTests(unittest.TestCase):
                     colors = {image.pixelColor(x, y).rgba() for x in range(center.left(), center.right() + 1)
                               for y in range(center.top(), center.bottom() + 1)}
                     self.assertGreater(len(colors), 1, "Arrow area is blank")
-                QTest.mouseClick(spin, Qt.LeftButton, pos=up.center())
+                QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=up.center())
                 self.assertEqual(spin.value(), 11)
-                QTest.mouseClick(spin, Qt.LeftButton, pos=down.center())
+                QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=down.center())
                 self.assertEqual(spin.value(), 10)
                 settings.close()
 
@@ -1461,7 +1501,7 @@ class QgisIntegrationTests(unittest.TestCase):
         self.assertEqual(combo.selected_values, ["99"])
         self.assertTrue(popup.isVisible())
         self.assertIn("99", popup.items)
-        popup.items[None].setCheckState(Qt.Checked)
+        popup.items[None].setCheckState(Qt.CheckState.Checked)
         self.assertEqual(combo.selected_values, [])
         self.assertEqual(combo.currentText(), self.plugin.ALL_VALUES)
         popup.hide()
@@ -1524,7 +1564,7 @@ class QgisIntegrationTests(unittest.TestCase):
             popup.list.scrollToItem(item)
             QgsApplication.processEvents()
             rect = popup.list.visualItemRect(item)
-            QTest.mouseClick(popup.list.viewport(), Qt.LeftButton, pos=QPoint(rect.left() + 8, rect.center().y()))
+            QTest.mouseClick(popup.list.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(rect.left() + 8, rect.center().y()))
             self.assertIn(value, combo.selected_values)
             self.assertTrue(popup.isVisible())
         self.assertEqual(set(combo.selected_values), {"1", "2"})

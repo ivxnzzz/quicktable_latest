@@ -37,7 +37,7 @@ class StatisticsStrip(QWidget):
         self.update()
 
     def eventFilter(self, watched, event):
-        if watched is self.table.viewport() and event.type() in (QEvent.Resize, QEvent.Move, QEvent.Show):
+        if watched is self.table.viewport() and event.type() in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.Show):
             self.update()
         return super().eventFilter(watched, event)
 
@@ -82,10 +82,10 @@ class StatisticsStrip(QWidget):
             return "<1%"
         return "{}%".format(round(percentage))
 
-    def draw_line(self, painter, rect, text, color=None, align=Qt.AlignLeft):
+    def draw_line(self, painter, rect, text, color=None, align=Qt.AlignmentFlag.AlignLeft):
         painter.setPen(QColor(color or self.foreground))
-        painter.drawText(rect, align | Qt.AlignVCenter,
-                         painter.fontMetrics().elidedText(str(text), Qt.ElideRight, max(0, rect.width())))
+        painter.drawText(rect, align | Qt.AlignmentFlag.AlignVCenter,
+                         painter.fontMetrics().elidedText(str(text), Qt.TextElideMode.ElideRight, max(0, rect.width())))
 
     @staticmethod
     def fit_text(painter, width, choices):
@@ -132,7 +132,7 @@ class StatisticsStrip(QWidget):
             max_count = max(bins) or 1
             chart_width = max(0, inner.width())
             chart_height = max(12, min(line_height * 2, inner.bottom() - y - line_height))
-            painter.setPen(Qt.NoPen)
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(self.accent))
             for i, amount in enumerate(bins):
                 left = inner.left() + i * chart_width // len(bins)
@@ -150,7 +150,7 @@ class StatisticsStrip(QWidget):
                 self.draw_line(painter, QRect(inner.left(), y + i * line_height, value_width, line_height),
                                value or "(empty string)")
                 self.draw_line(painter, QRect(inner.right() - percentage_width + 1, y + i * line_height,
-                                             percentage_width, line_height), percent, align=Qt.AlignRight)
+                                             percentage_width, line_height), percent, align=Qt.AlignmentFlag.AlignRight)
             other = count - sum(frequency for value, frequency in info["top"])
             if other:
                 self.draw_line(painter, QRect(inner.left(), y + len(info["top"]) * line_height, inner.width(), line_height),
@@ -170,7 +170,7 @@ class StatisticsStrip(QWidget):
         line_height = self.fontMetrics().height() + 2
         if self.table.columnCount() == 0 and self.message:
             painter.drawText(QRect(offset + 6, 4, max(0, self.table.viewport().width() - 12), line_height),
-                             Qt.AlignLeft | Qt.AlignVCenter, self.message)
+                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.message)
         for index in range(self.table.columnCount()):
             if self.table.isColumnHidden(index):
                 continue
@@ -182,7 +182,7 @@ class StatisticsStrip(QWidget):
         painter.end()
 
     def event(self, event):
-        if event.type() == QEvent.ToolTip:
+        if event.type() == QEvent.Type.ToolTip:
             x = event.pos().x() - self.viewport_offset()
             index = self.table.horizontalHeader().logicalIndexAt(x)
             if index >= 0 and not self.table.isColumnHidden(index):
@@ -233,7 +233,7 @@ class ColumnTextDelegate(QStyledItemDelegate):
             editor.addItem("True", "true")
             editor.addItem("False", "false")
             return editor
-        if self.field_kind == "date" and QDate.fromString(str(index.data(Qt.EditRole) or ""), Qt.ISODate).isValid():
+        if self.field_kind == "date" and QDate.fromString(str(index.data(Qt.ItemDataRole.EditRole) or ""), Qt.DateFormat.ISODate).isValid():
             editor = QDateEdit(parent)
             editor.setCalendarPopup(True)
             editor.setDisplayFormat("yyyy-MM-dd")
@@ -242,36 +242,36 @@ class ColumnTextDelegate(QStyledItemDelegate):
 
     def setEditorData(self, editor, index):
         if isinstance(editor, QComboBox):
-            value = str(index.data(Qt.EditRole) or "").lower()
+            value = str(index.data(Qt.ItemDataRole.EditRole) or "").lower()
             if self.field_kind == "boolean" and not self.value_map:
                 value = {"1": "true", "0": "false"}.get(value, value)
             match = next((i for i in range(editor.count()) if str(editor.itemData(i)).lower() == value), -1)
             if match < 0:
-                editor.addItem(str(index.data(Qt.EditRole)), str(index.data(Qt.EditRole)))
+                editor.addItem(str(index.data(Qt.ItemDataRole.EditRole)), str(index.data(Qt.ItemDataRole.EditRole)))
                 match = editor.count() - 1
             editor.setCurrentIndex(match)
         elif isinstance(editor, QDateEdit):
-            date = QDate.fromString(str(index.data(Qt.EditRole)), Qt.ISODate)
+            date = QDate.fromString(str(index.data(Qt.ItemDataRole.EditRole)), Qt.DateFormat.ISODate)
             editor.setDate(date if date.isValid() else QDate.currentDate())
         else:
             super().setEditorData(editor, index)
 
     def setModelData(self, editor, model, index):
         if isinstance(editor, QComboBox):
-            model.setData(index, editor.currentData(), Qt.EditRole)
+            model.setData(index, editor.currentData(), Qt.ItemDataRole.EditRole)
         elif isinstance(editor, QDateEdit):
-            model.setData(index, editor.date().toString(Qt.ISODate), Qt.EditRole)
+            model.setData(index, editor.date().toString(Qt.DateFormat.ISODate), Qt.ItemDataRole.EditRole)
         else:
             super().setModelData(editor, model, index)
 
     def initStyleOption(self, option, index):
         super().initStyleOption(option, index)
         if self.wrapped:
-            option.features |= QStyleOptionViewItem.WrapText
-            option.textElideMode = Qt.ElideNone
+            option.features |= QStyleOptionViewItem.ViewItemFeature.WrapText
+            option.textElideMode = Qt.TextElideMode.ElideNone
         else:
-            option.features &= ~QStyleOptionViewItem.WrapText
-            option.textElideMode = Qt.ElideRight
+            option.features &= ~QStyleOptionViewItem.ViewItemFeature.WrapText
+            option.textElideMode = Qt.TextElideMode.ElideRight
 
     def sizeHint(self, option, index):
         size = super().sizeHint(option, index)
@@ -283,7 +283,7 @@ class ColumnTextDelegate(QStyledItemDelegate):
         document.setDocumentMargin(0)
         document.setDefaultFont(styled.font)
         text_option = QTextOption()
-        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        text_option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         document.setDefaultTextOption(text_option)
         document.setPlainText(styled.text)
         document.setTextWidth(max(1, option.rect.width() - 18))
@@ -323,18 +323,18 @@ class FilterHeader(QHeaderView):
         active = logical_index in self.filtered_columns
         painter.save()
         try:
-            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.fillRect(QRect(rect.left(), rect.top() + top_height, rect.width(), rect.height() - top_height),
                              QColor(self.filter_background))
             painter.setPen(QPen(QColor(self.active_color if active else self.filter_border), 1))
             painter.setBrush(QColor(self.active_background if active else self.filter_background))
             painter.drawRoundedRect(area.adjusted(0, 0, -1, -1), 4, 4)
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QColor(self.active_color if active else self.icon_color))
             text_area = area.adjusted(8, 0, -22, 0)
             label = self.filter_labels.get(logical_index, "Filter…")
-            painter.drawText(text_area, Qt.AlignVCenter | Qt.AlignLeft,
-                             self.fontMetrics().elidedText(label, Qt.ElideRight, max(0, text_area.width())))
+            painter.drawText(text_area, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                             self.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, max(0, text_area.width())))
             painter.setPen(QPen(QColor(self.active_color if active else self.icon_color), 1.4))
             x, y = area.right() - 15, area.center().y() - 3
             path = QPainterPath()
@@ -357,7 +357,7 @@ class FilterHeader(QHeaderView):
         return (column, "sort" if position.y() < self.height() // 2 else "filter")
 
     def mousePressEvent(self, event):
-        self.pressed_part = self.part_at(event.pos()) if event.button() == Qt.LeftButton else None
+        self.pressed_part = self.part_at(event.pos()) if event.button() == Qt.MouseButton.LeftButton else None
         if self.pressed_part is not None:
             event.accept()
             return
@@ -366,7 +366,7 @@ class FilterHeader(QHeaderView):
     def mouseReleaseEvent(self, event):
         part = self.pressed_part
         self.pressed_part = None
-        if part is not None and event.button() == Qt.LeftButton:
+        if part is not None and event.button() == Qt.MouseButton.LeftButton:
             if self.part_at(event.pos()) == part:
                 (self.sortRequested if part[1] == "sort" else self.filterRequested).emit(part[0])
             event.accept()

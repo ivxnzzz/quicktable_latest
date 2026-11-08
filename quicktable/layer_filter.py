@@ -13,7 +13,7 @@ from .filter_widgets import CheckableValueCombo, ValuePopup
 from .compact_filters import FilterHeader, ColumnTextDelegate, StatisticsStrip
 from .pagination import PAGE_SIZES, normalize_page_size, page_window
 
-from qgis.PyQt.QtWidgets import (QAction, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
+from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                                  QComboBox, QLineEdit, QTableWidget,
                                  QTableWidgetItem, QLabel, QPushButton,
                                  QAbstractItemView, QAbstractButton, QFileDialog, QApplication,
@@ -21,9 +21,9 @@ from qgis.PyQt.QtWidgets import (QAction, QDialog, QVBoxLayout, QHBoxLayout, QGr
                                  QListWidget, QListWidgetItem, QDialogButtonBox,
                                  QFontComboBox, QSpinBox, QStyledItemDelegate, QStyle,
                                  QMenu, QInputDialog, QPlainTextEdit, QFormLayout)
-from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QVariant, QSize, QPoint, QDate, QByteArray, QEvent,
+from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint, QDate, QByteArray, QEvent,
                               QItemSelection, QItemSelectionModel)
-from qgis.PyQt.QtGui import QPalette, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush, QPixmap, QPainter
+from qgis.PyQt.QtGui import QAction, QPalette, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush, QPixmap, QPainter
 from qgis.PyQt.QtSvg import QSvgRenderer
 from qgis.core import (QgsProject, QgsMapLayer, QgsFeatureRequest,
                        QgsExpression, QgsApplication, QgsVectorDataProvider,
@@ -63,7 +63,7 @@ def toolbar_icon(name, color):
            'fill="none" stroke="{}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{}</svg>'
            .format(color, TOOL_ICONS[name]))
     pixmap = QPixmap(48, 48)
-    pixmap.fill(Qt.transparent)
+    pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     QSvgRenderer(QByteArray(svg.encode("utf-8"))).render(painter)
     painter.end()
@@ -74,9 +74,9 @@ def toolbar_icon(name, color):
 def field_kind(field):
     if field is None:
         return "text"
-    return {QVariant.Int: "integer", QVariant.UInt: "integer", QVariant.LongLong: "integer",
-            QVariant.ULongLong: "integer", QVariant.Double: "number", QVariant.Bool: "boolean",
-            QVariant.Date: "date", QVariant.DateTime: "datetime", QVariant.Time: "time"}.get(field.type(), "text")
+    return {QMetaType.Type.Int: "integer", QMetaType.Type.UInt: "integer", QMetaType.Type.LongLong: "integer",
+            QMetaType.Type.ULongLong: "integer", QMetaType.Type.Double: "number", QMetaType.Type.Bool: "boolean",
+            QMetaType.Type.QDate: "date", QMetaType.Type.QDateTime: "datetime", QMetaType.Type.QTime: "time"}.get(field.type(), "text")
 
 
 
@@ -86,7 +86,7 @@ def collect_feature_ids(task, source, expression, sort_field=None, ascending=Tru
     if task.isCanceled():
         return None
     request = QgsFeatureRequest()
-    request.setFlags(QgsFeatureRequest.NoGeometry)
+    request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
     if not sort_field:
         request.setNoAttributes()
     if expression:
@@ -186,7 +186,7 @@ def collect_column_statistics(task, source, columns, ids):
     if not ids or not columns:
         return {"summaries": summaries}
     request = QgsFeatureRequest().setFilterFids(list(ids))
-    request.setFlags(QgsFeatureRequest.NoGeometry)
+    request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
     request.setSubsetOfAttributes([index for index, numeric in columns])
     features = source.getFeatures(request)
     try:
@@ -273,7 +273,7 @@ def collect_column_statistics(task, source, columns, ids):
 def collect_values(task, source, index, expression):
     """Read a bounded set of suggestions from an independent feature source."""
     request = QgsFeatureRequest()
-    request.setFlags(QgsFeatureRequest.NoGeometry)
+    request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
     request.setSubsetOfAttributes([index])
     request.setLimit(MAX_VALUE_FEATURES + 1)
     if expression:
@@ -469,12 +469,12 @@ def build_css(name, font_family=None, font_size=9):
 def dark_palette(widget, name):
     t = THEMES[name]
     pal = widget.palette()
-    pal.setColor(QPalette.Base, QColor(t["surface"]))
-    pal.setColor(QPalette.Window, QColor(t["surface"]))
-    pal.setColor(QPalette.Text, QColor(t["text"]))
-    pal.setColor(QPalette.WindowText, QColor(t["text"]))
-    pal.setColor(QPalette.Highlight, QColor(t["sel_bg"]))
-    pal.setColor(QPalette.HighlightedText, QColor(t["sel_fg"]))
+    pal.setColor(QPalette.ColorRole.Base, QColor(t["surface"]))
+    pal.setColor(QPalette.ColorRole.Window, QColor(t["surface"]))
+    pal.setColor(QPalette.ColorRole.Text, QColor(t["text"]))
+    pal.setColor(QPalette.ColorRole.WindowText, QColor(t["text"]))
+    pal.setColor(QPalette.ColorRole.Highlight, QColor(t["sel_bg"]))
+    pal.setColor(QPalette.ColorRole.HighlightedText, QColor(t["sel_fg"]))
     widget.setPalette(pal)
 
 
@@ -511,26 +511,26 @@ class FontPreviewDelegate(QStyledItemDelegate):
         self.point_size = point_size
 
     def preview_font(self, index):
-        return QFont(str(index.data(Qt.DisplayRole)), self.point_size)
+        return QFont(str(index.data(Qt.ItemDataRole.DisplayRole)), self.point_size)
 
     def paint(self, painter, option, index):
         colors = THEMES[self.theme]
-        selected = bool(option.state & QStyle.State_Selected)
-        hover = bool(option.state & QStyle.State_MouseOver)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
         painter.save()
         try:
             painter.setClipRect(option.rect)
             painter.fillRect(option.rect, QColor(colors["sel_bg" if selected else "hover_bg" if hover else "surface"]))
             painter.setPen(QColor(colors["sel_fg" if selected else "text"]))
             painter.setFont(self.preview_font(index))
-            painter.drawText(option.rect.adjusted(8, 0, -8, 0), Qt.AlignLeft | Qt.AlignVCenter,
-                             str(index.data(Qt.DisplayRole)))
+            painter.drawText(option.rect.adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                             str(index.data(Qt.ItemDataRole.DisplayRole)))
         finally:
             painter.restore()
 
     def sizeHint(self, option, index):
         metrics = QFontMetrics(self.preview_font(index))
-        return QSize(max(280, metrics.horizontalAdvance(str(index.data(Qt.DisplayRole))) + 20),
+        return QSize(max(280, metrics.horizontalAdvance(str(index.data(Qt.ItemDataRole.DisplayRole))) + 20),
                      max(24, metrics.height() + 8))
 
 
@@ -551,7 +551,7 @@ class SettingsDialog(QDialog):
         self.font_picker = QFontComboBox()
         self.font_picker.setCurrentFont(QFont(family))
         self.font_picker.setMinimumContentsLength(18)
-        self.font_picker.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.font_picker.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         row.addWidget(self.font_picker, 1)
         row.addWidget(QLabel("Size"))
         self.font_size_spin = QSpinBox()
@@ -560,7 +560,7 @@ class SettingsDialog(QDialog):
         self.font_size_spin.setValue(size)
         self.font_size_spin.setKeyboardTracking(False)
         self.font_size_spin.setMinimumWidth(110)
-        self.font_size_spin.setButtonSymbols(QSpinBox.UpDownArrows)
+        self.font_size_spin.setButtonSymbols(QSpinBox.ButtonSymbols.UpDownArrows)
         row.addWidget(self.font_size_spin)
         layout.addLayout(row)
         self.preview = QLabel("Aa Bb Cc  0123456789")
@@ -581,7 +581,7 @@ class SettingsDialog(QDialog):
         row.addWidget(self.pin_cb)
         row.addStretch(1)
         layout.addLayout(row)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -627,9 +627,9 @@ class AddFieldDialog(QDialog):
         self.name = QLineEdit()
         self.name.setPlaceholderText("Field name")
         self.field_type = QComboBox()
-        for label, value in (("Text", QVariant.String), ("Whole number (32-bit)", QVariant.Int),
-                             ("Whole number (64-bit)", QVariant.LongLong), ("Decimal number", QVariant.Double),
-                             ("Date", QVariant.Date), ("True / False", QVariant.Bool)):
+        for label, value in (("Text", QMetaType.Type.QString), ("Whole number (32-bit)", QMetaType.Type.Int),
+                             ("Whole number (64-bit)", QMetaType.Type.LongLong), ("Decimal number", QMetaType.Type.Double),
+                             ("Date", QMetaType.Type.QDate), ("True / False", QMetaType.Type.Bool)):
             self.field_type.addItem(label, value)
         self.length = QSpinBox()
         self.length.setRange(0, 255)
@@ -646,8 +646,8 @@ class AddFieldDialog(QDialog):
         note = QLabel("The new field starts empty. Length and precision depend on the data source. Save edits to commit.")
         note.setWordWrap(True)
         layout.addWidget(note)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Add field")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add field")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -656,8 +656,8 @@ class AddFieldDialog(QDialog):
 
     def update_type(self):
         kind = self.field_type.currentData()
-        self.length.setEnabled(kind in (QVariant.String, QVariant.Int, QVariant.LongLong, QVariant.Double))
-        self.precision.setEnabled(kind == QVariant.Double)
+        self.length.setEnabled(kind in (QMetaType.Type.QString, QMetaType.Type.Int, QMetaType.Type.LongLong, QMetaType.Type.Double))
+        self.precision.setEnabled(kind == QMetaType.Type.Double)
 
 
 class BulkEditDialog(QDialog):
@@ -692,8 +692,8 @@ class BulkEditDialog(QDialog):
         self.hint = QLabel("Changes are undoable and remain unsaved until Save edits.")
         self.hint.setWordWrap(True)
         layout.addWidget(self.hint)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.apply_button = buttons.button(QDialogButtonBox.Ok)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.apply_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
         self.apply_button.setText("Apply changes")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -752,7 +752,7 @@ class AutofillDialog(QDialog):
         self.values = QPlainTextEdit()
         dark_palette(self.values, parent.theme)
         palette = self.values.palette()
-        palette.setColor(QPalette.PlaceholderText, QColor(THEMES[parent.theme]["muted"]))
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(THEMES[parent.theme]["muted"]))
         self.values.setPalette(palette)
         self.step = QLineEdit("1")
         self.step.setPlaceholderText("e.g. 1")
@@ -766,8 +766,8 @@ class AutofillDialog(QDialog):
         self.hint = QLabel()
         self.hint.setWordWrap(True)
         layout.addWidget(self.hint)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Preview…")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Preview…")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -799,7 +799,7 @@ class FinderDialog(QDialog):
         self.resize(1040, 620)
         self.fields = []
         self.sort_field = None
-        self.sort_order = Qt.AscendingOrder
+        self.sort_order = Qt.SortOrder.AscendingOrder
         self.column_delegates = {}
         self.applying_column_layout = False
         self.layout_settings_key = None
@@ -835,7 +835,7 @@ class FinderDialog(QDialog):
         self.theme = saved if saved in THEMES else "light"
         families = set(QFontDatabase().families())
         default_family = next((name for name in ("JetBrains Mono", "Cascadia Mono", "SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono")
-                               if name in families), QFontDatabase.systemFont(QFontDatabase.FixedFont).family())
+                               if name in families), QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont).family())
         saved_family = str(QSettings().value("LayerFilter/fontFamily", default_family))
         self.font_family = saved_family if saved_family in families else default_family
         try:
@@ -966,21 +966,21 @@ class FinderDialog(QDialog):
         clay.addWidget(self.selection_tools, 1, 0, 1, 2)
 
         self.table = QTableWidget()
-        self.table.setHorizontalHeader(FilterHeader(Qt.Horizontal, self.table))
+        self.table.setHorizontalHeader(FilterHeader(Qt.Orientation.Horizontal, self.table))
         self.table.setWordWrap(True)
         self.table.horizontalHeader().filterRequested.connect(self.open_column_filter)
         self.table.horizontalHeader().sortRequested.connect(self.sort_header_column)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setToolTip("Click a row to select it. Ctrl-click adds/removes rows; Shift-click selects a range.")
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.table.horizontalHeader().setToolTip("Click a column name to sort; click its filter below for filtering and column options. Drag a border to resize.")
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(True)
-        self.table.verticalHeader().setDefaultAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.table.verticalHeader().setDefaultSectionSize(23)
         self.table.verticalHeader().setToolTip("Row number in the current filtered and sorted results")
         corner = self.table.findChild(QAbstractButton, "qt_tableview_cornerbutton")
@@ -988,8 +988,8 @@ class FinderDialog(QDialog):
             corner_layout = QHBoxLayout(corner)
             corner_layout.setContentsMargins(0, 0, 0, 0)
             corner_label = QLabel("#", corner)
-            corner_label.setAlignment(Qt.AlignCenter)
-            corner_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+            corner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            corner_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             corner_layout.addWidget(corner_label)
         self.table.setProperty("editing", "false")
         self.statistics_strip = StatisticsStrip(self.table, self)
@@ -1070,7 +1070,7 @@ class FinderDialog(QDialog):
         self.btn_save.setObjectName("primary")
         self.btn_discard.setObjectName("danger")
         for b in self.findChildren(QPushButton):
-            b.setCursor(Qt.PointingHandCursor)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_settings.clicked.connect(self.show_settings)
         self.btn_statistics.toggled.connect(self.set_statistics_visible)
         show_statistics = str(QSettings().value("LayerFilter/statisticsVisible", "false")).lower() in ("true", "1")
@@ -1123,11 +1123,11 @@ class FinderDialog(QDialog):
         QgsProject.instance().layersRemoved.connect(self.on_layers_changed)
 
     def apply_flags(self):
-        flags = (Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint |
-                 Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint |
-                 Qt.WindowCloseButtonHint)
+        flags = (Qt.WindowType.Window | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowSystemMenuHint |
+                 Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint |
+                 Qt.WindowType.WindowCloseButtonHint)
         if self.pinned:
-            flags |= Qt.WindowStaysOnTopHint
+            flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
 
     @staticmethod
@@ -1270,7 +1270,7 @@ class FinderDialog(QDialog):
 
     def show_settings(self):
         dialog = SettingsDialog(self, self.font_family, self.font_size, self.theme, self.pinned)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             pin_changed = self.pinned != dialog.pin_cb.isChecked()
             self.font_family = dialog.font_picker.currentFont().family()
             self.font_size = dialog.font_size_spin.value()
@@ -1305,9 +1305,9 @@ class FinderDialog(QDialog):
         return lb
 
     def add_filter_row(self, *args):
-        widget = QFrame(self, Qt.Popup)
+        widget = QFrame(self, Qt.WindowType.Popup)
         widget.setObjectName("fieldFilterPopup")
-        widget.setAttribute(Qt.WA_NoMouseReplay, True)
+        widget.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay, True)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(12, 12, 12, 12)
         label = QLabel("Filter")
@@ -1374,8 +1374,8 @@ class FinderDialog(QDialog):
                               number_controls=number_controls, number_format=number_format)
         wrap_text.toggled.connect(lambda checked: self.set_column_wrap(row.field.currentText(), checked))
         number_format.currentIndexChanged.connect(lambda *args: self.set_number_format(row.field.currentText(), number_format.currentData()))
-        ascending.clicked.connect(lambda: self.sort_filter_column(row, Qt.AscendingOrder))
-        descending.clicked.connect(lambda: self.sort_filter_column(row, Qt.DescendingOrder))
+        ascending.clicked.connect(lambda: self.sort_filter_column(row, Qt.SortOrder.AscendingOrder))
+        descending.clicked.connect(lambda: self.sort_filter_column(row, Qt.SortOrder.DescendingOrder))
         self.filter_rows.append(row)
         field.currentIndexChanged.connect(lambda *args, row=row: self.on_filter_field_changed(row))
         operator.currentIndexChanged.connect(lambda *args, row=row: self.on_filter_operator_changed(row))
@@ -1414,8 +1414,8 @@ class FinderDialog(QDialog):
         column = self.fields.index(row.field.currentText()) if row.field.currentText() in self.fields else -1
         sorted_here = bool(self.sort_field and self.sort_field == row.field.currentText())
         order = self.sort_order if self.sort_field else header.sortIndicatorOrder()
-        row.ascending.setChecked(sorted_here and order == Qt.AscendingOrder)
-        row.descending.setChecked(sorted_here and order == Qt.DescendingOrder)
+        row.ascending.setChecked(sorted_here and order == Qt.SortOrder.AscendingOrder)
+        row.descending.setChecked(sorted_here and order == Qt.SortOrder.DescendingOrder)
         blocked = row.wrap_text.blockSignals(True)
         row.wrap_text.setChecked(row.field.currentText() in self.wrapped_fields())
         row.wrap_text.blockSignals(blocked)
@@ -1444,9 +1444,9 @@ class FinderDialog(QDialog):
         row.widget.move(x, y)
         row.widget.show()
         if row.operator.currentText() == "Equals":
-            row.choices.search.setFocus(Qt.PopupFocusReason)
+            row.choices.search.setFocus(Qt.FocusReason.PopupFocusReason)
         else:
-            row.value.setFocus(Qt.PopupFocusReason)
+            row.value.setFocus(Qt.FocusReason.PopupFocusReason)
 
     def sort_filter_column(self, row, order):
         name = row.field.currentText()
@@ -1461,7 +1461,7 @@ class FinderDialog(QDialog):
         if column < 0 or column >= len(self.fields):
             return
         name = self.fields[column]
-        order = Qt.DescendingOrder if self.sort_field == name and self.sort_order == Qt.AscendingOrder else Qt.AscendingOrder
+        order = Qt.SortOrder.DescendingOrder if self.sort_field == name and self.sort_order == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
         self.sort_field = name
         self.sort_order = order
         self.page = 0
@@ -1530,7 +1530,7 @@ class FinderDialog(QDialog):
         row.field.clear()
         row.field.addItem(NO_FIELD)
         row.field.addItems(self.fields)
-        row.field.setCurrentIndex(max(row.field.findText(name or NO_FIELD, Qt.MatchExactly), 0))
+        row.field.setCurrentIndex(max(row.field.findText(name or NO_FIELD, Qt.MatchFlag.MatchExactly), 0))
         row.field.blockSignals(blocked)
 
     def sync_filter_inputs(self):
@@ -1729,28 +1729,28 @@ class FinderDialog(QDialog):
         columns = QListWidget()
         for index, name in enumerate(self.fields):
             item = QListWidgetItem(name, columns)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Unchecked if self.table.isColumnHidden(index) else Qt.Checked)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked if self.table.isColumnHidden(index) else Qt.CheckState.Checked)
         layout.addWidget(columns)
         show_all = QPushButton("Show all columns")
-        show_all.clicked.connect(lambda: [columns.item(i).setCheckState(Qt.Checked)
+        show_all.clicked.connect(lambda: [columns.item(i).setCheckState(Qt.CheckState.Checked)
                                          for i in range(columns.count())])
         layout.addWidget(show_all)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Apply")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Apply")
         layout.addWidget(buttons)
 
         def accept():
-            if not any(columns.item(i).checkState() == Qt.Checked for i in range(columns.count())):
+            if not any(columns.item(i).checkState() == Qt.CheckState.Checked for i in range(columns.count())):
                 QMessageBox.information(dialog, "Visible columns", "Keep at least one column visible.")
                 return
             dialog.accept()
 
         buttons.accepted.connect(accept)
         buttons.rejected.connect(dialog.reject)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             hidden = [columns.item(i).text() for i in range(columns.count())
-                      if columns.item(i).checkState() != Qt.Checked]
+                      if columns.item(i).checkState() != Qt.CheckState.Checked]
             key = self.column_settings_key()
             if key:
                 QSettings().setValue(key, hidden)
@@ -1791,7 +1791,7 @@ class FinderDialog(QDialog):
         """Prefer QGIS's current vector layer when opening or rebuilding the list."""
         current = self.current_layer()
         active = self.iface.activeLayer()
-        prefer = active.id() if active is not None and active.type() == QgsMapLayer.VectorLayer and active.isValid() else (
+        prefer = active.id() if active is not None and active.type() == QgsMapLayer.LayerType.VectorLayer and active.isValid() else (
             current.id() if current is not None else None)
         self.rebuild_layer_list(prefer)
         self.edit.setFocus()
@@ -1800,7 +1800,7 @@ class FinderDialog(QDialog):
         keep = prefer_id or self.layer.currentData()
         previous = self.hooked_id
         vectors = [layer for layer in QgsProject.instance().mapLayers().values()
-                   if layer.type() == QgsMapLayer.VectorLayer]
+                   if layer.type() == QgsMapLayer.LayerType.VectorLayer]
         self.update_validity_watchers(vectors)
         layers = [layer for layer in vectors if layer.isValid()]
         layers.sort(key=lambda layer: layer.name().lower())
@@ -1845,7 +1845,7 @@ class FinderDialog(QDialog):
     def refresh_available_layers(self):
         if not self.closing:
             active = self.iface.activeLayer()
-            prefer = active.id() if active is not None and active.type() == QgsMapLayer.VectorLayer and active.isValid() else None
+            prefer = active.id() if active is not None and active.type() == QgsMapLayer.LayerType.VectorLayer and active.isValid() else None
             self.rebuild_layer_list(prefer, refresh_current=False)
 
     def on_layers_changed(self, *args):
@@ -1853,7 +1853,7 @@ class FinderDialog(QDialog):
             self.rebuild_layer_list()
 
     def on_active_layer_changed(self, layer):
-        if not self.isVisible() or self.isMinimized() or layer is None or layer.type() != QgsMapLayer.VectorLayer:
+        if not self.isVisible() or self.isMinimized() or layer is None or layer.type() != QgsMapLayer.LayerType.VectorLayer:
             return
         if not layer.isValid():
             if self.layer.findData(layer.id()) >= 0:
@@ -1869,14 +1869,14 @@ class FinderDialog(QDialog):
 
     def changeEvent(self, event):
         super().changeEvent(event)
-        if (event.type() == QEvent.WindowStateChange and hasattr(self, "layer")
+        if (event.type() == QEvent.Type.WindowStateChange and hasattr(self, "layer")
                 and not self.isMinimized()):
             QTimer.singleShot(0, self.sync_active_layer)
 
     def current_layer(self):
         lid = self.layer.currentData()
         layer = QgsProject.instance().mapLayer(lid) if lid else None
-        return layer if layer is not None and layer.type() == QgsMapLayer.VectorLayer and layer.isValid() else None
+        return layer if layer is not None and layer.type() == QgsMapLayer.LayerType.VectorLayer and layer.isValid() else None
 
     def on_layer_changed(self, *args):
         self.selection_filter_timer.stop()
@@ -2002,7 +2002,7 @@ class FinderDialog(QDialog):
             if isinstance(combo, CheckableValueCombo) and combo.checkable and combo.selected_values:
                 combo.update_checked_text()
             else:
-                index = combo.findText(text, Qt.MatchExactly)
+                index = combo.findText(text, Qt.MatchFlag.MatchExactly)
                 if index >= 0:
                     combo.setCurrentIndex(index)
                 else:
@@ -2200,7 +2200,7 @@ class FinderDialog(QDialog):
         menu.addSeparator()
         clear = menu.addAction("Clear nearby results")
         clear.setEnabled(self.nearby_scope_ids is not None or self.nearby_task is not None)
-        action = menu.exec_(self.btn_nearby.mapToGlobal(QPoint(0, self.btn_nearby.height())))
+        action = menu.exec(self.btn_nearby.mapToGlobal(QPoint(0, self.btn_nearby.height())))
         if action == touching:
             self.find_nearby(None)
         elif action == distance:
@@ -2308,7 +2308,7 @@ class FinderDialog(QDialog):
             load_menu.addAction(name, lambda checked=False, n=name: self.load_saved_filter(n))
             delete_menu.addAction(name, lambda checked=False, n=name: self.delete_saved_filter(n))
         save.triggered.connect(self.save_current_filter)
-        menu.exec_(self.btn_saved_filters.mapToGlobal(QPoint(0, self.btn_saved_filters.height())))
+        menu.exec(self.btn_saved_filters.mapToGlobal(QPoint(0, self.btn_saved_filters.height())))
 
     def save_current_filter(self):
         key = self.saved_filters_key()
@@ -2320,7 +2320,7 @@ class FinderDialog(QDialog):
             return
         entries = self.saved_filters()
         if name in entries and QMessageBox.question(self, "Replace saved filters", "Replace '{}'?".format(name),
-                                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         entries[name] = {"search": self.edit.text(), "filters": [
             {"field": row.field.currentText(), "operator": row.operator.currentText(),
@@ -2333,7 +2333,7 @@ class FinderDialog(QDialog):
     def delete_saved_filter(self, name):
         entries = self.saved_filters()
         if name in entries and QMessageBox.question(self, "Delete saved filters", "Delete '{}'?".format(name),
-                                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+                                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             del entries[name]
             QSettings().setValue(self.saved_filters_key(), json.dumps(entries))
 
@@ -2505,7 +2505,7 @@ class FinderDialog(QDialog):
             source = QgsVectorLayerFeatureSource(layer)
             task = QgsTask.fromFunction("QuickTable: find matches", collect_feature_ids_task,
                                         source=source, expression=expression, sort_field=sort_field,
-                                        ascending=self.sort_order == Qt.AscendingOrder, on_finished=finished)
+                                        ascending=self.sort_order == Qt.SortOrder.AscendingOrder, on_finished=finished)
             task.setDependentLayers([layer])
             self.query_task = task
             self.clear_results("Finding matching records…")
@@ -2559,16 +2559,16 @@ class FinderDialog(QDialog):
                 self.table.setVerticalHeaderItem(r, QTableWidgetItem(str(window.start + r + 1)))
                 for c in range(len(self.fields)):
                     v = attrs[c] if c < len(attrs) else None
-                    s = "" if v is None or v == NULL else v.toString(Qt.ISODate) if isinstance(v, QDate) else str(v)
+                    s = "" if v is None or v == NULL else v.toString(Qt.DateFormat.ISODate) if isinstance(v, QDate) else str(v)
                     item = SortItem(s)
                     if c in changed_attributes.get(fid, {}):
                         item.setBackground(QColor("#365345" if self.theme == "dark" else "#d8efdf"))
                         item.setToolTip("Unsaved attribute change")
                     if c in readonly_columns:
-                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                         item.setToolTip("This field is read-only in the layer configuration or data source")
                     if c == 0:
-                        item.setData(Qt.UserRole, feat.id())
+                        item.setData(Qt.ItemDataRole.UserRole, feat.id())
                     self.table.setItem(r, c, item)
                 r += 1
 
@@ -2608,16 +2608,16 @@ class FinderDialog(QDialog):
         if t == "":
             return NULL
         kind = field.type()
-        if kind in (QVariant.Int, QVariant.UInt, QVariant.LongLong, QVariant.ULongLong):
+        if kind in (QMetaType.Type.Int, QMetaType.Type.UInt, QMetaType.Type.LongLong, QMetaType.Type.ULongLong):
             return int(t)
-        if kind == QVariant.Double:
+        if kind == QMetaType.Type.Double:
             return checked_float(t)
-        if kind == QVariant.Bool:
+        if kind == QMetaType.Type.Bool:
             if t.lower() not in ("true", "false", "1", "0"):
                 raise ValueError("Enter true or false")
             return t.lower() in ("true", "1")
-        if kind == QVariant.Date:
-            date = QDate.fromString(t, Qt.ISODate)
+        if kind == QMetaType.Type.QDate:
+            date = QDate.fromString(t, Qt.DateFormat.ISODate)
             if not date.isValid():
                 raise ValueError("Enter a date as YYYY-MM-DD")
             return date
@@ -2629,8 +2629,8 @@ class FinderDialog(QDialog):
         sty.unpolish(self.table)
         sty.polish(self.table)
         self.table.setEditTriggers(
-            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
-            if on else QAbstractItemView.NoEditTriggers)
+            QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
+            if on else QAbstractItemView.EditTrigger.NoEditTriggers)
         self.btn_save.setEnabled(on)
         self.btn_discard.setEnabled(on)
         self.update_undo_buttons()
@@ -2663,7 +2663,7 @@ class FinderDialog(QDialog):
         if layer.readOnly():
             return False, "Editing is disabled for this layer in QGIS."
         provider = layer.dataProvider()
-        if provider is None or not (provider.capabilities() & QgsVectorDataProvider.ChangeAttributeValues):
+        if provider is None or not (provider.capabilities() & QgsVectorDataProvider.Capability.ChangeAttributeValues):
             return False, "This data source does not allow attribute editing. Export to GeoPackage to edit a copy."
         return True, "Attributes can be edited. Enable edit mode, then double-click a writable cell."
 
@@ -2697,11 +2697,11 @@ class FinderDialog(QDialog):
                 if layer.isModified():
                     ans = QMessageBox.question(
                         self, "QuickTable", "Save your edits to this layer?",
-                        QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
-                    if ans == QMessageBox.Cancel:
+                        QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+                    if ans == QMessageBox.StandardButton.Cancel:
                         self.uncheck_edit(True)
                         return
-                    if ans == QMessageBox.Save:
+                    if ans == QMessageBox.StandardButton.Save:
                         if not layer.commitChanges():
                             self.status.setText("Could not save: " + "; ".join(layer.commitErrors()))
                             self.uncheck_edit(True)
@@ -2729,7 +2729,7 @@ class FinderDialog(QDialog):
         fld = layer.fields()[col]
         feat = layer.getFeature(fid)
         old = feat.attributes()[col] if feat.isValid() and col < len(feat.attributes()) else None
-        old_text = "" if old is None or old == NULL else old.toString(Qt.ISODate) if isinstance(old, QDate) else str(old)
+        old_text = "" if old is None or old == NULL else old.toString(Qt.DateFormat.ISODate) if isinstance(old, QDate) else str(old)
         ok, err = False, ""
         command_started = False
         try:
@@ -2800,7 +2800,7 @@ class FinderDialog(QDialog):
             return
         ans = QMessageBox.question(self, "QuickTable",
                                    "Discard all unsaved edits on this layer?")
-        if ans != QMessageBox.Yes:
+        if ans != QMessageBox.StandardButton.Yes:
             return
         layer.rollBack()
         layer.startEditing()  # stay in edit mode
@@ -2811,7 +2811,7 @@ class FinderDialog(QDialog):
     def row_fid(self, row):
         # fid lives on column 0 of each row (items move with the row when sorting)
         it = self.table.item(row, 0)
-        return it.data(Qt.UserRole) if it else None
+        return it.data(Qt.ItemDataRole.UserRole) if it else None
 
     def all_fids(self):
         return [self.row_fid(r) for r in range(self.table.rowCount())
@@ -2829,7 +2829,7 @@ class FinderDialog(QDialog):
         if layer is None or not layer.isValid():
             return False, "Choose a valid vector layer."
         provider = layer.dataProvider()
-        if layer.readOnly() or provider is None or not (provider.capabilities() & QgsVectorDataProvider.DeleteFeatures):
+        if layer.readOnly() or provider is None or not (provider.capabilities() & QgsVectorDataProvider.Capability.DeleteFeatures):
             return False, "This layer does not allow deleting features."
         if not layer.isEditable():
             return False, "Enable edit mode before deleting selected features."
@@ -2849,12 +2849,12 @@ class FinderDialog(QDialog):
         self.btn_autofill.setToolTip("Fill a column on selected rows or the current page")
         provider = layer.dataProvider() if layer else None
         can_add = bool(layer and layer.isEditable() and not layer.readOnly() and provider
-                       and provider.capabilities() & QgsVectorDataProvider.AddAttributes)
+                       and provider.capabilities() & QgsVectorDataProvider.Capability.AddAttributes)
         self.btn_add_field.setEnabled(can_add)
         self.btn_add_field.setToolTip("Add an empty field to the layer" if can_add else
                                       "Enable edit mode on a layer that supports adding fields")
         can_delete_field = bool(layer and layer.isEditable() and not layer.readOnly() and provider
-                                and provider.capabilities() & QgsVectorDataProvider.DeleteAttributes)
+                                and provider.capabilities() & QgsVectorDataProvider.Capability.DeleteAttributes)
         self.btn_delete_field.setEnabled(can_delete_field)
         self.btn_delete_field.setToolTip("Delete a field and its values after confirmation" if can_delete_field else
                                          "Enable edit mode on a layer that supports deleting fields")
@@ -2865,11 +2865,11 @@ class FinderDialog(QDialog):
         if not layer or not layer.isEditable() or layer.readOnly():
             return
         provider = layer.dataProvider()
-        if not provider or not provider.capabilities() & QgsVectorDataProvider.AddAttributes:
+        if not provider or not provider.capabilities() & QgsVectorDataProvider.Capability.AddAttributes:
             self.status.setText("This layer does not support adding fields.")
             return
         dialog = AddFieldDialog(self)
-        if dialog.exec_() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             dialog.deleteLater()
             return
         name = dialog.name.text().strip()
@@ -2916,7 +2916,7 @@ class FinderDialog(QDialog):
         primary_keys = set(layer.primaryKeyAttributes())
         form = layer.editFormConfig()
         return [index for index in range(fields.count())
-                if index not in primary_keys and fields.fieldOrigin(index) in (QgsFields.OriginProvider, QgsFields.OriginEdit)
+                if index not in primary_keys and fields.fieldOrigin(index) in (QgsFields.FieldOrigin.OriginProvider, QgsFields.FieldOrigin.OriginEdit)
                 and not form.readOnly(index)
                 and not (hasattr(fields[index], "isReadOnly") and fields[index].isReadOnly())]
 
@@ -2924,7 +2924,7 @@ class FinderDialog(QDialog):
         layer = self.current_layer()
         provider = layer.dataProvider() if layer else None
         if (not layer or not layer.isEditable() or layer.readOnly() or not provider
-                or not provider.capabilities() & QgsVectorDataProvider.DeleteAttributes):
+                or not provider.capabilities() & QgsVectorDataProvider.Capability.DeleteAttributes):
             self.status.setText("This layer does not allow deleting fields in the current edit mode.")
             return
         indices = self.deletable_field_indices(layer)
@@ -2938,13 +2938,13 @@ class FinderDialog(QDialog):
         index = layer.fields().indexFromName(name)
         question = ("Delete field '{}' from '{}'?\n\nThis removes the attribute and its values from every feature. "
                     "The deletion remains pending until Save edits; you can undo it before saving.").format(name, layer.name())
-        if QMessageBox.question(self, "Delete field", question, QMessageBox.Yes | QMessageBox.Cancel,
-                                QMessageBox.Cancel) != QMessageBox.Yes:
+        if QMessageBox.question(self, "Delete field", question, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                                QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
             return
         if (self.current_layer() != layer or not layer.isEditable() or layer.readOnly()
                 or index < 0 or index >= layer.fields().count() or layer.fields()[index].name() != name
                 or index not in self.deletable_field_indices(layer)
-                or not layer.dataProvider().capabilities() & QgsVectorDataProvider.DeleteAttributes):
+                or not layer.dataProvider().capabilities() & QgsVectorDataProvider.Capability.DeleteAttributes):
             self.status.setText("The layer or field changed. Field deletion canceled.")
             return
         command_open = False
@@ -2981,7 +2981,7 @@ class FinderDialog(QDialog):
             self.status.setText("No writable fields available.")
             return
         dialog = BulkEditDialog(self, layer, names, fids)
-        if dialog.exec_() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         name = dialog.field.currentText()
         index = layer.fields().indexFromName(name)
@@ -3033,8 +3033,8 @@ class FinderDialog(QDialog):
             if not start.is_finite() or not step.is_finite():
                 raise ValueError("Start and step must be finite numbers.")
             output = []
-            limits = {QVariant.Int: (-(2**31), 2**31 - 1), QVariant.UInt: (0, 2**32 - 1),
-                      QVariant.LongLong: (-(2**63), 2**63 - 1), QVariant.ULongLong: (0, 2**64 - 1)}
+            limits = {QMetaType.Type.Int: (-(2**31), 2**31 - 1), QMetaType.Type.UInt: (0, 2**32 - 1),
+                      QMetaType.Type.LongLong: (-(2**63), 2**63 - 1), QMetaType.Type.ULongLong: (0, 2**64 - 1)}
             for i in range(count):
                 number = start + step * i
                 if field.type() in limits:
@@ -3064,7 +3064,7 @@ class FinderDialog(QDialog):
             self.status.setText("No writable fields available.")
             return
         dialog = AutofillDialog(self, names, len(selected_fids), len(page_fids))
-        if dialog.exec_() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             dialog.deleteLater()
             return
         name = dialog.field.currentText()
@@ -3099,7 +3099,7 @@ class FinderDialog(QDialog):
         message = "Fill column '{}' for {} rows ({}), in table order?\n\n{}\n\nChanges remain unsaved until Save edits.".format(
             name, len(fids), scope_label, "\n".join(preview))
         if QMessageBox.question(self, "Confirm autofill", message,
-                                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) != QMessageBox.Yes:
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
             return
         current_fids = self.selected_fids() if scope == "selected" else self.all_fids()
         if (self.current_layer() != layer or not layer.isEditable() or current_fids != fids
@@ -3142,17 +3142,17 @@ class FinderDialog(QDialog):
         fids = list(dict.fromkeys(self.selected_fids()))
         question = QMessageBox(self)
         question.setWindowTitle("Delete selected features")
-        question.setIcon(QMessageBox.Warning)
-        question.setTextFormat(Qt.PlainText)
+        question.setIcon(QMessageBox.Icon.Warning)
+        question.setTextFormat(Qt.TextFormat.PlainText)
         question.setText("Delete {} selected feature(s) from '{}'?".format(len(fids), layer.name()))
         question.setInformativeText(
             "This deletes the full features, including their geometry.\n"
             "The deletion stays unsaved until you click Save edits. Discard edits rolls back all unsaved changes.")
-        delete = question.addButton("Delete", QMessageBox.DestructiveRole)
-        cancel = question.addButton(QMessageBox.Cancel)
+        delete = question.addButton("Delete", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = question.addButton(QMessageBox.StandardButton.Cancel)
         question.setDefaultButton(cancel)
         question.setEscapeButton(cancel)
-        question.exec_()
+        question.exec()
         confirmed = question.clickedButton() == delete
         question.deleteLater()
         if not confirmed:
@@ -3213,7 +3213,7 @@ class FinderDialog(QDialog):
                 end = row if selected else row - 1
                 ranges.select(model.index(start, 0), model.index(end, last_column))
                 start = None
-        selection_model.select(ranges, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        selection_model.select(ranges, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
 
     def set_map_selection(self, layer, fids):
         self.syncing_map_selection = True
@@ -3277,8 +3277,8 @@ class FinderDialog(QDialog):
         self.update_selection_status()
 
     def set_multi_selection(self, enabled):
-        self.table.setSelectionMode(QAbstractItemView.MultiSelection if enabled
-                                    else QAbstractItemView.ExtendedSelection)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection if enabled
+                                    else QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setToolTip("Click rows to add or remove them from the selection." if enabled else
                              "Ctrl-click adds/removes rows; Shift-click selects a range.")
 

@@ -16,8 +16,8 @@ sys.path.insert(0, str(root))
 
 from qgis.PyQt.QtCore import QSettings
 
-QSettings.setDefaultFormat(QSettings.IniFormat)
-QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(profile))
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(profile))
 suite = unittest.defaultTestLoader.discover(str(root / "tests"))
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)
