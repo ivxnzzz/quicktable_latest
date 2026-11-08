@@ -3343,12 +3343,10 @@ class QuickFilter:
         self.action.triggered.connect(self.show)
         self.iface.addPluginToMenu("&QuickTable", self.action)
         self.iface.addToolBarIcon(self.action)
-        self.iface.registerMainWindowAction(self.action, "Ctrl+Shift+F")
 
     def unload(self):
         self.iface.removePluginMenu("&QuickTable", self.action)
         self.iface.removeToolBarIcon(self.action)
-        self.iface.unregisterMainWindowAction(self.action)
         if self.dlg:
             self.dlg.shutdown()
             self.dlg = None

@@ -2,7 +2,7 @@
 
 Search, filter and edit vector-layer attributes in QGIS, including tables without geometry.
 
-**Version:** 1.01 (experimental) | **Author:** Iven Paul Rolloque
+**Version:** 1.02 (experimental) | **Author:** Iven Paul Rolloque
 
 ![QuickTable interface showing attribute filters and column statistics](https://raw.githubusercontent.com/ivxnzzz/quicktable_latest/main/docs/images/quicktable-interface.png)
 
@@ -33,7 +33,7 @@ Restart QGIS after updating an existing installation.
 
 ## Usage
 
-1. Open **QuickTable** from the plugin menu or toolbar, or press **Ctrl+Shift+F**.
+1. Open QuickTable from the Plugins menu or toolbar.
 2. Choose a vector layer. Use the search box or column filters to narrow results;
    click a column name to sort.
 3. Select rows to select their features in QGIS. Use **Selected only** to limit
@@ -77,7 +77,7 @@ Build the release ZIP from the repository root:
 python tools/package_plugin.py
 ```
 
-This creates `dist/quicktable_latest-1.01.zip` with only the runtime files,
+This creates `dist/quicktable_latest-1.02.zip` with only the runtime files,
 metadata, documentation, license and icons. Development files are excluded.
 
 The verified target is Windows with QGIS 3.44.12. Linux and macOS have not
