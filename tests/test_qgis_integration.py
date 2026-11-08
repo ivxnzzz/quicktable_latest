@@ -1055,7 +1055,7 @@ class QgisIntegrationTests(unittest.TestCase):
         self.assertEqual(dialog.selected_fids(), [ids[150]])
         self.assertEqual(layer.selectedFeatureIds(), [ids[150]])
 
-    def test_active_layer_changes_and_restore_follow_qgis(self):
+    def test_layer_choice_survives_restore_resize_and_active_layer_changes(self):
         first = self.make_layer(2)
         second = self.make_layer(3)
         dialog = self.create_dialog(first)
@@ -1072,22 +1072,42 @@ class QgisIntegrationTests(unittest.TestCase):
         row.value.set_selected_values(["1"])
         dialog.refresh_dependent_values()
         self.wait_for_results(dialog)
-        dialog.sync_active_layer()
-        self.assertEqual(dialog.filter_rows[0].value.selected_values, ["1"])
+        original_ids = dialog.result_ids
+        original_version = dialog.query_version
         current[0] = second
-        dialog.on_active_layer_changed(second)
+        plugin = self.plugin.QuickFilter(dialog.iface)
+        plugin.dlg = dialog
+        dialog.showMinimized()
+        QgsApplication.processEvents()
+        plugin.show()
+        dialog.resize(dialog.width() + 100, dialog.height() + 50)
+        dialog.showMaximized()
+        QgsApplication.processEvents()
+        dialog.showNormal()
+        QgsApplication.processEvents()
+        self.assertEqual(dialog.current_layer().id(), first.id())
+        self.assertEqual(dialog.filter_rows[0].value.selected_values, ["1"])
+        self.assertEqual(dialog.result_ids, original_ids)
+        self.assertEqual(dialog.query_version, original_version)
+        dialog.refresh_available_layers()
+        self.assertEqual(dialog.current_layer().id(), first.id())
+        dialog.layer.setCurrentIndex(dialog.layer.findData(second.id()))
         self.wait_for_results(dialog)
         self.assertEqual(dialog.current_layer().id(), second.id())
         self.assertEqual(len(dialog.result_ids), 3)
-        dialog.showMinimized()
+
+    def test_horizontal_scroll_moves_by_pixels(self):
+        dialog = self.create_dialog(self.make_layer(2))
+        dialog.show()
+        dialog.table.horizontalHeader().setStretchLastSection(False)
+        for column in range(dialog.table.columnCount()):
+            dialog.table.setColumnWidth(column, 1500)
         QgsApplication.processEvents()
-        current[0] = first
-        dialog.on_active_layer_changed(first)
-        self.assertEqual(dialog.current_layer().id(), second.id())
-        dialog.showNormal()
-        QgsApplication.processEvents()
-        self.wait_for_results(dialog)
-        self.assertEqual(dialog.current_layer().id(), first.id())
+        self.assertEqual(dialog.table.horizontalScrollMode(), QAbstractItemView.ScrollMode.ScrollPerPixel)
+        scrollbar = dialog.table.horizontalScrollBar()
+        scrollbar.setValue(0)
+        scrollbar.setValue(20)
+        self.assertEqual(dialog.table.horizontalHeader().sectionViewportPosition(0), -20)
 
     def test_unavailable_layer_is_hidden_and_valid_layer_remains_usable(self):
         valid = self.make_layer(2)
@@ -1100,7 +1120,7 @@ class QgisIntegrationTests(unittest.TestCase):
         QgsApplication.processEvents()
         self.assertEqual(dialog.layer.findData(invalid.id()), -1)
         self.assertGreaterEqual(dialog.layer.findData(valid.id()), 0)
-        dialog.on_active_layer_changed(invalid)
+        dialog.refresh_available_layers()
         self.assertEqual(dialog.current_layer().id(), valid.id())
         self.assertEqual(len(dialog.result_ids), 2)
 

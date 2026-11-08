@@ -21,7 +21,7 @@ from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                                  QListWidget, QListWidgetItem, QDialogButtonBox,
                                  QFontComboBox, QSpinBox, QStyledItemDelegate, QStyle,
                                  QMenu, QInputDialog, QPlainTextEdit, QFormLayout)
-from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint, QDate, QByteArray, QEvent,
+from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint, QDate, QByteArray,
                               QItemSelection, QItemSelectionModel)
 from qgis.PyQt.QtGui import QAction, QPalette, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush, QPixmap, QPainter
 from qgis.PyQt.QtSvg import QSvgRenderer
@@ -966,6 +966,8 @@ class FinderDialog(QDialog):
         clay.addWidget(self.selection_tools, 1, 0, 1, 2)
 
         self.table = QTableWidget()
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.table.horizontalScrollBar().setSingleStep(20)
         self.table.setHorizontalHeader(FilterHeader(Qt.Orientation.Horizontal, self.table))
         self.table.setWordWrap(True)
         self.table.horizontalHeader().filterRequested.connect(self.open_column_filter)
@@ -1117,8 +1119,7 @@ class FinderDialog(QDialog):
         self.btn_undo.clicked.connect(lambda: self.change_undo_stack(False))
         self.btn_redo.clicked.connect(lambda: self.change_undo_stack(True))
 
-        # follow the layer selected in QGIS and layers added/removed
-        iface.currentLayerChanged.connect(self.on_active_layer_changed)
+        # Keep the chosen layer while tracking project layer availability.
         QgsProject.instance().layersAdded.connect(self.on_layers_changed)
         QgsProject.instance().layersRemoved.connect(self.on_layers_changed)
 
@@ -1774,8 +1775,7 @@ class FinderDialog(QDialog):
         for task in self.value_tasks.values():
             task.cancel()
         self.value_tasks.clear()
-        for sig, slot in ((self.iface.currentLayerChanged, self.on_active_layer_changed),
-                          (QgsProject.instance().layersAdded, self.on_layers_changed),
+        for sig, slot in ((QgsProject.instance().layersAdded, self.on_layers_changed),
                           (QgsProject.instance().layersRemoved, self.on_layers_changed)):
             try:
                 sig.disconnect(slot)
@@ -1788,11 +1788,11 @@ class FinderDialog(QDialog):
 
     # ---------- layer list / active layer ----------
     def refresh(self):
-        """Prefer QGIS's current vector layer when opening or rebuilding the list."""
+        """Use QGIS's current vector layer only to initialize the layer choice."""
         current = self.current_layer()
         active = self.iface.activeLayer()
-        prefer = active.id() if active is not None and active.type() == QgsMapLayer.LayerType.VectorLayer and active.isValid() else (
-            current.id() if current is not None else None)
+        prefer = current.id() if current is not None else (
+            active.id() if active is not None and active.type() == QgsMapLayer.LayerType.VectorLayer and active.isValid() else None)
         self.rebuild_layer_list(prefer)
         self.edit.setFocus()
 
@@ -1844,34 +1844,11 @@ class FinderDialog(QDialog):
 
     def refresh_available_layers(self):
         if not self.closing:
-            active = self.iface.activeLayer()
-            prefer = active.id() if active is not None and active.type() == QgsMapLayer.LayerType.VectorLayer and active.isValid() else None
-            self.rebuild_layer_list(prefer, refresh_current=False)
+            self.rebuild_layer_list(refresh_current=False)
 
     def on_layers_changed(self, *args):
         if self.isVisible():
             self.rebuild_layer_list()
-
-    def on_active_layer_changed(self, layer):
-        if not self.isVisible() or self.isMinimized() or layer is None or layer.type() != QgsMapLayer.LayerType.VectorLayer:
-            return
-        if not layer.isValid():
-            if self.layer.findData(layer.id()) >= 0:
-                self.schedule_layer_list_refresh()
-            return
-        i = self.layer.findData(layer.id())
-        if i >= 0 and i != self.layer.currentIndex():
-            self.layer.setCurrentIndex(i)  # triggers on_layer_changed
-
-    def sync_active_layer(self):
-        if not self.closing and self.isVisible() and not self.isMinimized():
-            self.on_active_layer_changed(self.iface.activeLayer())
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if (event.type() == QEvent.Type.WindowStateChange and hasattr(self, "layer")
-                and not self.isMinimized()):
-            QTimer.singleShot(0, self.sync_active_layer)
 
     def current_layer(self):
         lid = self.layer.currentData()
@@ -3357,11 +3334,10 @@ class QuickFilter:
             self.dlg = FinderDialog(self.iface)
             QgsApplication.instance().aboutToQuit.connect(self.dlg.close)
         # Restoring/raising the existing window must not reload its filter controls.
-        if created or self.dlg.current_layer() is None or (not self.dlg.isVisible() and not self.dlg.isMinimized()):
+        if created or self.dlg.current_layer() is None:
             self.dlg.refresh()
         if self.dlg.isMinimized():
             self.dlg.showNormal()
         self.dlg.show()
-        self.dlg.sync_active_layer()
         self.dlg.raise_()
         self.dlg.activateWindow()
