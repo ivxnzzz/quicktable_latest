@@ -7,7 +7,7 @@ import sys
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
@@ -36,6 +36,28 @@ class QgisIntegrationTests(unittest.TestCase):
     def tearDownClass(cls):
         if cls.owns_app:
             cls.app.exitQgis()
+
+    def test_plugin_connects_shutdown_handler_only_when_creating_dialog(self):
+        dialog = Mock()
+        dialog.current_layer.return_value = object()
+        dialog.isVisible.return_value = True
+        dialog.isMinimized.return_value = False
+        app = Mock()
+        plugin = self.plugin.QuickFilter(Mock())
+        with patch.object(self.plugin, "FinderDialog", return_value=dialog), \
+             patch.object(self.plugin.QgsApplication, "instance", return_value=app):
+            plugin.show()
+            plugin.show()
+        app.aboutToQuit.connect.assert_called_once_with(dialog.close)
+
+    def test_plugin_does_not_silently_hide_shutdown_connection_failure(self):
+        app = Mock()
+        app.aboutToQuit.connect.side_effect = RuntimeError("shutdown signal unavailable")
+        plugin = self.plugin.QuickFilter(Mock())
+        with patch.object(self.plugin, "FinderDialog", return_value=Mock()), \
+             patch.object(self.plugin.QgsApplication, "instance", return_value=app):
+            with self.assertRaisesRegex(RuntimeError, "shutdown signal unavailable"):
+                plugin.show()
 
     def test_plugin_icons_and_theme_asset_paths(self):
         import configparser

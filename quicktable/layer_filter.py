@@ -712,7 +712,10 @@ class BulkEditDialog(QDialog):
                 raise ValueError("Some selected features are no longer available.")
             self.value = value
             self.original_values = {fid: self.features[fid][index] for fid in self.fids}
-            display = lambda v: "NULL" if v is None or v == NULL else str(v)
+
+            def display(value):
+                return "NULL" if value is None or value == NULL else str(value)
+
             lines = ["{}: {} → {}".format(fid, display(self.original_values[fid]), display(value))
                      for fid in self.fids[:10]]
             if len(self.fids) > 10:
@@ -1796,15 +1799,15 @@ class FinderDialog(QDialog):
     def rebuild_layer_list(self, prefer_id=None, refresh_current=True):
         keep = prefer_id or self.layer.currentData()
         previous = self.hooked_id
-        vectors = [l for l in QgsProject.instance().mapLayers().values()
-                   if l.type() == QgsMapLayer.VectorLayer]
+        vectors = [layer for layer in QgsProject.instance().mapLayers().values()
+                   if layer.type() == QgsMapLayer.VectorLayer]
         self.update_validity_watchers(vectors)
-        layers = [l for l in vectors if l.isValid()]
-        layers.sort(key=lambda l: l.name().lower())
+        layers = [layer for layer in vectors if layer.isValid()]
+        layers.sort(key=lambda layer: layer.name().lower())
         self.layer.blockSignals(True)
         self.layer.clear()
-        for l in layers:
-            self.layer.addItem(l.name(), l.id())
+        for layer in layers:
+            self.layer.addItem(layer.name(), layer.id())
         i = self.layer.findData(keep)
         if i < 0:
             i = 0 if self.layer.count() else -1
@@ -1914,18 +1917,18 @@ class FinderDialog(QDialog):
 
     def hook_layer(self):
         self.unhook_layer()
-        l = self.current_layer()
-        if l is None:
+        layer = self.current_layer()
+        if layer is None:
             return
         for name in LAYER_SIGNALS:
             try:
-                getattr(l, name).connect(self.schedule_refresh)
+                getattr(layer, name).connect(self.schedule_refresh)
             except (TypeError, RuntimeError, AttributeError):
                 pass
-        self.hooked_layer = l
-        self.hooked_id = l.id()
-        l.selectionChanged.connect(self.on_layer_selection_changed)
-        self.hooked_undo_stack = l.undoStack()
+        self.hooked_layer = layer
+        self.hooked_id = layer.id()
+        layer.selectionChanged.connect(self.on_layer_selection_changed)
+        self.hooked_undo_stack = layer.undoStack()
         self.hooked_undo_stack.indexChanged.connect(self.on_undo_stack_changed)
 
     def on_undo_stack_changed(self, *args):
@@ -2025,10 +2028,10 @@ class FinderDialog(QDialog):
         if isinstance(value_combo, CheckableValueCombo):
             value_combo.update_checked_text()
         value_combo.setToolTip("")
-        l = self.current_layer()
+        layer = self.current_layer()
         name = field_combo.currentText()
-        idx = l.fields().lookupField(name) if l else -1
-        if not l or name == NO_FIELD or idx < 0:
+        idx = layer.fields().lookupField(name) if layer else -1
+        if not layer or name == NO_FIELD or idx < 0:
             return
 
         def finished(exception, result=None):
@@ -2058,11 +2061,11 @@ class FinderDialog(QDialog):
 
         try:
             # Snapshot on the main thread; workers never access the live layer or UI.
-            source = QgsVectorLayerFeatureSource(l)
+            source = QgsVectorLayerFeatureSource(layer)
             task = QgsTask.fromFunction("QuickTable: suggestions", collect_values,
                                         source=source, index=idx, expression=base_expr,
                                         on_finished=finished)
-            task.setDependentLayers([l])
+            task.setDependentLayers([layer])
             self.value_tasks[value_combo] = task
             value_combo.setToolTip("Loading suggestions; you can type a filter while waiting.")
             QgsApplication.taskManager().addTask(task)
@@ -2512,21 +2515,21 @@ class FinderDialog(QDialog):
             self.clear_results("Could not search: {}".format(e))
 
     def render_page(self):
-        l = self.current_layer()
-        if l is None or self.result_ids is None:
+        layer = self.current_layer()
+        if layer is None or self.result_ids is None:
             return
         window = page_window(len(self.result_ids), self.page, self.page_size.currentData())
         self.page = window.page
         page_ids = self.result_ids[window.start:window.stop]
-        previous_selection = set(l.selectedFeatureIds())
+        previous_selection = set(layer.selectedFeatureIds())
         self.pending_selection.clear()
-        self.table_layer_id = l.id() if l else None
+        self.table_layer_id = layer.id() if layer else None
         previous_column_layout = self.applying_column_layout
         self.applying_column_layout = True
         self.table.blockSignals(True)
         try:
             self.clear_table()
-            if not l:
+            if not layer:
                 self.status.setText("No vector layer selected")
                 return
 
@@ -2535,16 +2538,16 @@ class FinderDialog(QDialog):
             self.table.verticalHeader().setMinimumWidth(
                 max(42, self.table.fontMetrics().horizontalAdvance(str(len(self.result_ids))) + 20))
             self.apply_column_visibility()
-            form = l.editFormConfig()
-            layer_fields = l.fields()
-            edit_buffer = l.editBuffer() if l.isEditable() else None
+            form = layer.editFormConfig()
+            layer_fields = layer.fields()
+            edit_buffer = layer.editBuffer() if layer.isEditable() else None
             changed_attributes = edit_buffer.changedAttributeValues() if edit_buffer else {}
             readonly_columns = {c for c in range(len(self.fields))
                                 if form.readOnly(c) or (hasattr(layer_fields[c], "isReadOnly")
                                                         and layer_fields[c].isReadOnly())}
 
             req = QgsFeatureRequest().setFilterFids(list(page_ids))
-            features = {feature.id(): feature for feature in l.getFeatures(req)} if page_ids else {}
+            features = {feature.id(): feature for feature in layer.getFeatures(req)} if page_ids else {}
 
             r = 0
             for fid in page_ids:
@@ -2579,7 +2582,7 @@ class FinderDialog(QDialog):
                        "{} record(s)  |  click a column name to sort or its filter below".format(r))
             if self.nearby_description:
                 message = "Nearby: {}  |  {} record(s) on this page".format(self.nearby_description, r)
-            if self.pending_notice and l.isModified():
+            if self.pending_notice and layer.isModified():
                 message = self.pending_notice
             self.pending_notice = None
             self.status.setText(message)
@@ -2635,15 +2638,15 @@ class FinderDialog(QDialog):
 
     def sync_edit_state(self):
         """Mirror QGIS: checkbox is on when the layer is in edit mode."""
-        l = self.current_layer()
+        layer = self.current_layer()
         can_edit, reason = self.attribute_editability()
-        on = bool(l and l.isEditable() and can_edit)
+        on = bool(layer and layer.isEditable() and can_edit)
         self.edit_cb.blockSignals(True)
         self.edit_cb.setChecked(on)
         self.edit_cb.blockSignals(False)
         self.edit_cb.setEnabled(can_edit)
         self.edit_cb.setToolTip(reason)
-        text = "Editing" if on else "Editable" if can_edit else "Read-only" if l else "No layer"
+        text = "Editing" if on else "Editable" if can_edit else "Read-only" if layer else "No layer"
         color = THEMES[self.theme]["accent" if can_edit else "muted"]
         self.edit_status.setText("<b style='color:{}'>{}</b>".format(color, text))
         self.edit_status.setToolTip(reason)
@@ -2671,8 +2674,8 @@ class FinderDialog(QDialog):
         self.apply_edit_state(checked)
 
     def on_edit_toggled(self, checked):
-        l = self.current_layer()
-        if l is None:
+        layer = self.current_layer()
+        if layer is None:
             self.uncheck_edit(False)
             return
         if checked:
@@ -2681,17 +2684,17 @@ class FinderDialog(QDialog):
                 self.sync_edit_state()
                 self.status.setText(reason)
                 return
-            if not l.isEditable() and not l.startEditing():
+            if not layer.isEditable() and not layer.startEditing():
                 reason = "QGIS could not start editing. Check file permissions, connection permissions or source locks, then Refresh lists to retry."
-                self.edit_failure = (l.id(), reason)
+                self.edit_failure = (layer.id(), reason)
                 self.sync_edit_state()
                 self.status.setText(reason)
                 return
             self.sync_edit_state()
             self.status.setText("Edit mode ON. Double-click a cell, then Save edits when done.")
         else:
-            if l.isEditable():
-                if l.isModified():
+            if layer.isEditable():
+                if layer.isModified():
                     ans = QMessageBox.question(
                         self, "QuickTable", "Save your edits to this layer?",
                         QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
@@ -2699,15 +2702,15 @@ class FinderDialog(QDialog):
                         self.uncheck_edit(True)
                         return
                     if ans == QMessageBox.Save:
-                        if not l.commitChanges():
-                            self.status.setText("Could not save: " + "; ".join(l.commitErrors()))
+                        if not layer.commitChanges():
+                            self.status.setText("Could not save: " + "; ".join(layer.commitErrors()))
                             self.uncheck_edit(True)
                             return
                     else:
-                        l.rollBack()
+                        layer.rollBack()
                 else:
-                    if not l.commitChanges():
-                        self.status.setText("Could not stop editing: " + "; ".join(l.commitErrors()))
+                    if not layer.commitChanges():
+                        self.status.setText("Could not stop editing: " + "; ".join(layer.commitErrors()))
                         self.sync_edit_state()
                         return
             self.sync_edit_state()
@@ -2716,15 +2719,15 @@ class FinderDialog(QDialog):
     def on_cell_edited(self, item):
         if not self.edit_cb.isChecked():
             return
-        l = self.current_layer()
-        if l is None or not l.isEditable():
+        layer = self.current_layer()
+        if layer is None or not layer.isEditable():
             return
         row, col = item.row(), item.column()
         fid = self.row_fid(row)
         if fid is None or col >= len(self.fields):
             return
-        fld = l.fields()[col]
-        feat = l.getFeature(fid)
+        fld = layer.fields()[col]
+        feat = layer.getFeature(fid)
         old = feat.attributes()[col] if feat.isValid() and col < len(feat.attributes()) else None
         old_text = "" if old is None or old == NULL else old.toString(Qt.ISODate) if isinstance(old, QDate) else str(old)
         ok, err = False, ""
@@ -2732,15 +2735,15 @@ class FinderDialog(QDialog):
         try:
             new = self.convert(fld, item.text())
             self.own_edit = True
-            l.beginEditCommand("Change {}".format(fld.name()))
+            layer.beginEditCommand("Change {}".format(fld.name()))
             command_started = True
-            ok = l.changeAttributeValue(fid, col, new)
+            ok = layer.changeAttributeValue(fid, col, new)
             if not ok:
                 err = "layer refused the change"
             if ok:
-                l.endEditCommand()
+                layer.endEditCommand()
             else:
-                l.destroyEditCommand()
+                layer.destroyEditCommand()
             command_started = False
         except ValueError as e:
             err = "Invalid value for {}: {}".format(fld.name(), e)
@@ -2748,11 +2751,11 @@ class FinderDialog(QDialog):
             err = str(e)
         finally:
             if command_started:
-                l.destroyEditCommand()
+                layer.destroyEditCommand()
             self.own_edit = False
             self.update_undo_buttons()
         if ok:
-            changed = l.editBuffer().changedAttributeValues().get(fid, {}) if l.editBuffer() else {}
+            changed = layer.editBuffer().changedAttributeValues().get(fid, {}) if layer.editBuffer() else {}
             self.table.blockSignals(True)
             try:
                 item.setBackground(QBrush(QColor("#365345" if self.theme == "dark" else "#d8efdf")) if col in changed else QBrush())
@@ -2776,31 +2779,31 @@ class FinderDialog(QDialog):
         self.reload_value_lists()
 
     def save_edits(self):
-        l = self.current_layer()
-        if l is None or not l.isEditable():
+        layer = self.current_layer()
+        if layer is None or not layer.isEditable():
             return
-        if not l.isModified():
+        if not layer.isModified():
             self.status.setText("Nothing to save")
             return
-        if l.commitChanges(False):  # False = stay in edit mode
+        if layer.commitChanges(False):  # False = stay in edit mode
             self.soft_refresh()
             self.status.setText("Saved to the layer.")
         else:
-            self.status.setText("Could not save: " + "; ".join(l.commitErrors()))
+            self.status.setText("Could not save: " + "; ".join(layer.commitErrors()))
 
     def discard_edits(self):
-        l = self.current_layer()
-        if l is None or not l.isEditable():
+        layer = self.current_layer()
+        if layer is None or not layer.isEditable():
             return
-        if not l.isModified():
+        if not layer.isModified():
             self.status.setText("Nothing to discard")
             return
         ans = QMessageBox.question(self, "QuickTable",
                                    "Discard all unsaved edits on this layer?")
         if ans != QMessageBox.Yes:
             return
-        l.rollBack()
-        l.startEditing()  # stay in edit mode
+        layer.rollBack()
+        layer.startEditing()  # stay in edit mode
         self.status.setText("Unsaved edits discarded.")
         self.soft_refresh()
 
@@ -3238,27 +3241,27 @@ class FinderDialog(QDialog):
         self.update_selection_status()
 
     def on_row_selection(self):
-        l = self.current_layer()
+        layer = self.current_layer()
         fids = self.selected_fids()
         self.update_selection_status()
-        if not l:
+        if not layer:
             return
-        self.set_map_selection(l, fids)
-        if not fids or not l.isSpatial():
+        self.set_map_selection(layer, fids)
+        if not fids or not layer.isSpatial():
             return
         canvas = self.iface.mapCanvas()
-        canvas.zoomToSelected(l)
-        canvas.flashFeatureIds(l, fids[:50])
+        canvas.zoomToSelected(layer)
+        canvas.flashFeatureIds(layer, fids[:50])
 
     def select_all(self):
-        l = self.current_layer()
+        layer = self.current_layer()
         self.table.blockSignals(True)
         try:
             self.table.selectAll()
         finally:
             self.table.blockSignals(False)
-        if l:
-            self.set_map_selection(l, self.all_fids())
+        if layer:
+            self.set_map_selection(layer, self.all_fids())
         self.update_selection_status()
 
     def unselect_all(self):
@@ -3268,9 +3271,9 @@ class FinderDialog(QDialog):
             self.table.clearSelection()
         finally:
             self.table.blockSignals(False)
-        l = self.current_layer()
-        if l:
-            self.set_map_selection(l, [])
+        layer = self.current_layer()
+        if layer:
+            self.set_map_selection(layer, [])
         self.update_selection_status()
 
     def set_multi_selection(self, enabled):
@@ -3294,11 +3297,11 @@ class FinderDialog(QDialog):
         self.update_delete_button()
 
     def zoom_all(self):
-        l = self.current_layer()
+        layer = self.current_layer()
         fids = self.all_fids()
-        if l and l.isSpatial() and fids:
+        if layer and layer.isSpatial() and fids:
             self.select_all()
-            self.iface.mapCanvas().zoomToSelected(l)
+            self.iface.mapCanvas().zoomToSelected(layer)
 
     # ---------- export ----------
     def table_rows(self):
@@ -3354,10 +3357,7 @@ class QuickFilter:
         created = self.dlg is None
         if self.dlg is None:
             self.dlg = FinderDialog(self.iface)
-            try:
-                QgsApplication.instance().aboutToQuit.connect(self.dlg.close)
-            except Exception:
-                pass
+            QgsApplication.instance().aboutToQuit.connect(self.dlg.close)
         # Restoring/raising the existing window must not reload its filter controls.
         if created or self.dlg.current_layer() is None or (not self.dlg.isVisible() and not self.dlg.isMinimized()):
             self.dlg.refresh()
