@@ -9,3 +9,6 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Built release packages and isolated release validation
+/dist/

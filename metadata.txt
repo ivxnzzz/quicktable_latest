@@ -1,6 +1,7 @@
 [general]
 name=QuickTable
-qgisMinimumVersion=3.16
+qgisMinimumVersion=3.44
+qgisMaximumVersion=3.99
 description=Easy search, filtering and attribute editing for vector layers
 about=Press Ctrl+Shift+F to search vector layers, filter with simple operators, choose visible columns, select features, edit writable attributes, and export spreadsheet-safe results.
 version=1.00

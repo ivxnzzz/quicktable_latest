@@ -15,9 +15,8 @@ Search, filter and edit vector-layer attributes in QGIS, including tables withou
 
 ## Requirements
 
-QGIS 3 with Python support; no additional Python packages required.
-The declared minimum is QGIS 3.16, pending compatibility testing for this release.
-QGIS 4 support has not been verified.
+QGIS 3.44 or later in the 3.x series, with Python support. No additional Python
+packages are required. QGIS 4 is not supported by this release.
 
 ## Installation
 
@@ -54,9 +53,17 @@ For QGIS integration tests, use QGIS's Python environment:
 python tests/run_qgis_tests.py
 ```
 
-To package, place the Python modules, `metadata.txt`, icons, `README.md` and
-`LICENSE` inside one `quicktable_latest/` folder and ZIP it. Exclude Git files,
-caches and test outputs.
+Build the release ZIP from the repository root:
+
+```sh
+python tools/package_plugin.py
+```
+
+This creates `dist/quicktable_latest-1.00.zip` with only the runtime files,
+metadata, documentation, license and icons. Development files are excluded.
+
+The verified target is Windows with QGIS 3.44.12. Linux and macOS have not
+been verified.
 
 ## Support
 
