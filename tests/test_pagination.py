@@ -1,6 +1,6 @@
 import unittest
 
-from pagination import DEFAULT_PAGE_SIZE, normalize_page_size, page_window
+from quicktable.pagination import DEFAULT_PAGE_SIZE, normalize_page_size, page_window
 
 
 class PaginationTests(unittest.TestCase):

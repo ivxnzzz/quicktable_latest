@@ -41,6 +41,18 @@ Nearby distances use the layer CRS units. Editing requires a writable data sourc
 
 ## Development
 
+Repository layout:
+
+```text
+quicktable/     Plugin implementation
+icons/          PNG and SVG assets
+tests/          Regression and QGIS integration tests
+tools/          Release packaging script
+dist/           Built ZIP (ignored by Git)
+```
+
+QGIS loads the root `__init__.py` and reads `metadata.txt`.
+
 Run regression tests:
 
 ```sh

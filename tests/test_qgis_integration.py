@@ -30,12 +30,28 @@ class QgisIntegrationTests(unittest.TestCase):
             cls.app.initQgis()
         root = pathlib.Path(__file__).resolve().parents[1]
         sys.path.insert(0, str(root.parent))
-        cls.plugin = importlib.import_module(root.name + ".layer_filter")
+        cls.plugin = importlib.import_module(root.name + ".quicktable.layer_filter")
 
     @classmethod
     def tearDownClass(cls):
         if cls.owns_app:
             cls.app.exitQgis()
+
+    def test_plugin_icons_and_theme_asset_paths(self):
+        import configparser
+        from qgis.PyQt.QtSvg import QSvgRenderer
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        metadata = configparser.ConfigParser()
+        metadata.read(root / "metadata.txt", encoding="utf-8")
+        self.assertEqual(metadata["general"]["icon"], "icons/icon.png")
+        self.assertTrue((root / metadata["general"]["icon"]).is_file())
+        self.assertFalse(self.plugin.plugin_icon().isNull())
+        for theme in ("light", "dark"):
+            urls = self.plugin._fill("@down_url|@up_url|@check_url", theme).split("|")
+            for kind, url in zip(("down", "up", "check"), urls):
+                self.assertEqual(pathlib.Path(url), root / "icons" / (kind + "_" + theme + ".svg"))
+                self.assertTrue(QSvgRenderer(url).isValid(), url)
 
     def combo(self, text):
         combo = QComboBox()

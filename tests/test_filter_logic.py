@@ -1,7 +1,7 @@
 import unittest
 import sqlite3
 
-from filter_logic import comparison_value, field_filter
+from quicktable.filter_logic import comparison_value, field_filter
 
 
 def quote(text):

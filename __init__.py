@@ -1,3 +1,3 @@
 def classFactory(iface):
-    from .layer_filter import QuickFilter
+    from .quicktable.layer_filter import QuickFilter
     return QuickFilter(iface)

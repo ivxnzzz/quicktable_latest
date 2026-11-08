@@ -2,7 +2,7 @@ import csv
 import io
 import unittest
 
-from filter_utils import checked_float, clipboard_text, spreadsheet_rows
+from quicktable.filter_utils import checked_float, clipboard_text, spreadsheet_rows
 
 
 class NumericConversionTests(unittest.TestCase):

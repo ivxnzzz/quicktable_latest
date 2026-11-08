@@ -34,10 +34,11 @@ ALL_VALUES = "(all)"
 MAX_VALUE_FEATURES = 2000
 MAX_STAT_DISTINCT = 25000
 STAT_HISTOGRAM_BINS = 16
+ICONS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "icons")
 
 
 def plugin_icon():
-    return QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png"))
+    return QIcon(os.path.join(ICONS_DIR, "icon.png"))
 
 
 TOOL_ICONS = {
@@ -451,7 +452,7 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
 def _fill(template, name, font_family=None, font_size=9):
     t = dict(THEMES[name])
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = ICONS_DIR
     t["font"] = '"{}"'.format(font_family.replace("\\", "\\\\").replace('"', '\\"')) if font_family else FONT
     t["font_size"] = "{}pt".format(font_size)
     t["title_size"] = "{}pt".format(font_size + 2)
