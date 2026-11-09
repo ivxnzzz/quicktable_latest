@@ -33,6 +33,14 @@ class SpreadsheetTests(unittest.TestCase):
         values = ["Alice", "", "00123", "first\nsecond", 'a"b', "123.45"]
         self.assertEqual(spreadsheet_rows([values]), [values])
 
+    def test_numeric_columns_preserve_negative_numbers_but_not_formulas(self):
+        rows = [["-header", "text", "number"], ["safe", "-10", "-10"],
+                ["safe", "=1+1", "-1+2"]]
+        expected = [["'-header", "text", "number"], ["safe", "'-10", "-10"],
+                    ["safe", "'=1+1", "'-1+2"]]
+        self.assertEqual(spreadsheet_rows(rows, [2]), expected)
+        self.assertEqual(list(csv.reader(io.StringIO(clipboard_text(rows, [2]), newline=""), delimiter="\t")), expected)
+
     def test_clipboard_roundtrip_preserves_cell_boundaries(self):
         rows = [["name", "notes"], ["Alice", 'first\tsecond\nthird "quoted"'], ["Bob", "line1\r\nline2"]]
         text = clipboard_text(rows)

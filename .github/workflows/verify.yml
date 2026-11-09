@@ -1,6 +1,8 @@
 name: Verify QuickTable
 on:
   workflow_dispatch:
+  push:
+  pull_request:
 permissions:
   contents: read
 jobs:
@@ -16,7 +18,7 @@ jobs:
   qgis:
     runs-on: ubuntu-latest
     container:
-      image: qgis/qgis:release-3_44
+      image: qgis/qgis:3.44.15-trixie
       options: --user root
     services:
       postgres:

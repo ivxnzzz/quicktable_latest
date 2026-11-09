@@ -1,6 +1,7 @@
 """Reproducible QGIS benchmark; run with QGIS Python, outside the test suite."""
 
 import argparse
+from array import array
 import importlib
 import json
 import os
@@ -47,7 +48,7 @@ def main():
             began = time.perf_counter()
             ids = module.collect_feature_ids(task, source, '')
             row['collect_ids_seconds'] = time.perf_counter() - began
-            row['id_cache_bytes'] = sys.getsizeof(ids) + sum(sys.getsizeof(fid) for fid in ids)
+            row['id_cache_bytes'] = sys.getsizeof(ids) + (0 if isinstance(ids, array) else sum(sys.getsizeof(fid) for fid in ids))
             began = time.perf_counter()
             module.collect_feature_ids(task, source, '', 'number', False)
             row['sort_seconds'] = time.perf_counter() - began

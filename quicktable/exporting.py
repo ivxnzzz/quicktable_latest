@@ -6,15 +6,19 @@ from pathlib import Path
 import tempfile
 
 from qgis.core import QgsFeatureRequest
+from qgis.PyQt.QtCore import QMetaType
 
 from .editing import attribute_text
-from .filter_utils import spreadsheet_rows
+from .filter_utils import spreadsheet_cell, spreadsheet_rows
 
 
 def export_csv_task(task, source, ids, columns, names, path):
     destination = Path(path)
     descriptor, temporary = tempfile.mkstemp(prefix='quicktable-', suffix='.csv', dir=destination.parent)
     count = 0
+    numeric_types = (QMetaType.Type.Int, QMetaType.Type.UInt, QMetaType.Type.LongLong,
+                     QMetaType.Type.ULongLong, QMetaType.Type.Double)
+    numeric_columns = {column for column in columns if source.fields()[column].type() in numeric_types}
     try:
         with os.fdopen(descriptor, 'w', newline='', encoding='utf-8-sig') as stream:
             writer = csv.writer(stream)
@@ -36,7 +40,8 @@ def export_csv_task(task, source, ids, columns, names, path):
                         return None
                     if fid not in features:
                         raise ValueError('Feature {} is no longer available; export was not replaced'.format(fid))
-                    writer.writerows(spreadsheet_rows([[attribute_text(features[fid][column]) for column in columns]]))
+                    writer.writerow([spreadsheet_cell(attribute_text(features[fid][column]), column in numeric_columns)
+                                     for column in columns])
                     count += 1
                 task.setProgress(count * 100 / max(1, len(ids)))
         if task.isCanceled():

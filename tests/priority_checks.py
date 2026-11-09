@@ -6,6 +6,58 @@ from unittest.mock import patch
 
 
 class PriorityChecks:
+    def test_large_result_ids_use_compact_storage_and_preserve_order(self):
+        from array import array
+        from qgis.core import QgsVectorLayerFeatureSource
+        layer = self.make_layer(50001)
+        source = QgsVectorLayerFeatureSource(layer)
+        ids = self.plugin.collect_feature_ids(SimpleNamespace(isCanceled=lambda: False), source, None)
+        self.assertIsInstance(ids, array)
+        self.assertEqual(len(ids), 50001)
+        self.assertEqual(list(ids[:10]), sorted(ids[:10]))
+        self.assertEqual(len(set(ids)), len(ids))
+        dialog = self.create_dialog(layer)
+        self.assertIsInstance(dialog.result_ids, array)
+        self.assertEqual(len(dialog.result_ids), 50001)
+        self.assertGreater(dialog.table.rowCount(), 0)
+        dialog.change_page(1)
+        self.assertEqual(dialog.page, 1)
+
+    def test_temporal_filter_suggestions_are_iso_strings(self):
+        from qgis.core import QgsFeature, QgsVectorLayer, QgsVectorLayerFeatureSource
+        from qgis.PyQt.QtCore import QDate, QDateTime, QTime
+        layer = QgsVectorLayer('None?field=day:date&field=moment:datetime&field=clock:time', 'dates', 'memory')
+        feature = QgsFeature(layer.fields())
+        feature.setAttributes([QDate(2026, 11, 10), QDateTime(QDate(2026, 11, 10), QTime(12, 30)), QTime(12, 30)])
+        layer.dataProvider().addFeatures([feature])
+        source = QgsVectorLayerFeatureSource(layer)
+        for index, expected in enumerate(('2026-11-10', '2026-11-10T12:30:00.000', '12:30:00.000')):
+            values, truncated = self.plugin.collect_values(SimpleNamespace(isCanceled=lambda: False), source, index, None)
+            self.assertEqual(list(values), [expected])
+            self.plugin.field_filter('"value"', 'Equals', expected, '', ('date', 'datetime', 'time')[index], self.plugin.QgsExpression.quotedString)
+
+    def test_csv_and_clipboard_keep_numeric_values_and_protect_text(self):
+        import csv
+        import tempfile
+        from pathlib import Path
+        from qgis.core import QgsFeature, QgsVectorLayer, QgsVectorLayerFeatureSource
+        from qgis.PyQt.QtWidgets import QApplication
+        layer = QgsVectorLayer('None?field=number:integer&field=text:string', 'numbers', 'memory')
+        feature = QgsFeature(layer.fields())
+        feature.setAttributes([-25, '-25'])
+        layer.dataProvider().addFeatures([feature])
+        dialog = self.create_dialog(layer)
+        dialog.copy_rows()
+        self.assertEqual(list(csv.reader(QApplication.clipboard().text().splitlines(), delimiter='\t'))[1], ['-25', "'-25"])
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / 'numbers.csv'
+        source = QgsVectorLayerFeatureSource(layer)
+        self.plugin.export_csv_task(SimpleNamespace(isCanceled=lambda: False, setProgress=lambda value: None),
+                                    source, tuple(f.id() for f in layer.getFeatures()), [0, 1], ['number', 'text'], str(path))
+        with path.open(newline='', encoding='utf-8-sig') as stream:
+            self.assertEqual(list(csv.reader(stream))[1], ['-25', "'-25"])
+
     def test_csv_exports_all_filtered_results_without_rendering_all_rows(self):
         import csv
         import tempfile

@@ -2,7 +2,7 @@
 
 Search, filter and edit vector-layer attributes in QGIS—even tables without geometry.
 
-**Stable release 2.00** · QGIS 3.44+ (3.x) · By Iven Paul Rolloque
+**Development version 2.0.1** · QGIS 3.44+ (3.x) · By Iven Paul Rolloque
 
 ![QuickTable interface with attribute filters and column statistics](https://raw.githubusercontent.com/ivxnzzz/quicktable_latest/main/docs/images/quicktable-interface.png)
 
@@ -25,7 +25,7 @@ _Sample data: Philippine PSGC boundaries from [altcoder/philippines-psgc-shapefi
 2. In **All**, search for **QuickTable**.
 3. Select it and click **Install Plugin**. If already installed, use **Upgrade Plugin** when available.
 
-Prefer a ZIP? Choose **Install from ZIP** and select `quicktable_latest-2.00.zip`.
+Prefer a ZIP? Build the package below, choose **Install from ZIP** and select `quicktable_latest-2.0.1.zip`.
 
 Restart QGIS after updating.
 
@@ -58,7 +58,7 @@ python tools/package_plugin.py
 python tools/smoke_package.py
 ```
 
-The build creates `dist/quicktable_latest-2.00.zip`. See the [remediation guide](https://github.com/ivxnzzz/quicktable_latest/blob/main/docs/remediation-guide.md) and [performance notes](https://github.com/ivxnzzz/quicktable_latest/blob/main/docs/performance.md) for validation details and limits.
+The build creates `dist/quicktable_latest-2.0.1.zip`. See the [remediation guide](https://github.com/ivxnzzz/quicktable_latest/blob/main/docs/remediation-guide.md) and [performance notes](https://github.com/ivxnzzz/quicktable_latest/blob/main/docs/performance.md) for validation details and limits.
 
 Automated checks have been run on **Windows with QGIS 3.44.12**. Linux and macOS remain unverified.
 

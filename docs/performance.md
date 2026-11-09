@@ -33,10 +33,16 @@ does not measure cancellation latency during an active provider request.
 
 ## Remaining scale limits
 
-All matching IDs are still cached before the first page is shown. This costs
-approximately 36 bytes per row in this benchmark. Moving to provider-specific
+All matching IDs are still cached before the first page is shown. For more than
+50,000 matches, the cache now uses a compact 64-bit array (about 8 bytes per ID,
+excluding array overhead). The table above describes the earlier tuple-based
+benchmark; peak memory has not yet been measured. Moving to provider-specific
 cursor paging would be a separate architectural change, with sorting and live
 editing semantics to preserve.
+
+A follow-up run on Windows with QGIS 3.44.13 measured a retained ID cache of
+800,080 bytes for 100,000 memory-layer records. This is not a measurement of
+peak process memory or remote-provider performance.
 
 Wide layers, large geometries, remote providers, large selected-only scopes,
 and active cancellation during slow provider operations need separate
@@ -46,5 +52,5 @@ macOS runtime behavior remains unverified.
 
 QGIS's official image tags are documented in the
 [QGIS Docker README](https://github.com/qgis/QGIS/blob/master/.docker/README.md).
-The verification workflow uses the QGIS 3.44 release branch image and a
+The verification workflow uses a pinned QGIS 3.44 image and a
 disposable PostGIS service.

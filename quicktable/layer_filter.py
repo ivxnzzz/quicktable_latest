@@ -3,6 +3,7 @@ import re
 import hashlib
 import json
 import math
+from array import array
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
@@ -101,7 +102,7 @@ def collect_feature_ids(task, source, expression, sort_field=None, ascending=Tru
         request.addOrderBy(QgsExpression.quotedColumnRef(sort_field), ascending)
         request.addOrderBy('$id', True)
     features = source.getFeatures(request)
-    ids = []
+    ids = array('q')
     try:
         for feature in features:
             if task.isCanceled():
@@ -111,7 +112,10 @@ def collect_feature_ids(task, source, expression, sort_field=None, ascending=Tru
         features.close()
     if task.isCanceled():
         return None
-    return tuple(ids if sort_field else sorted(ids))
+    if not sort_field:
+        ids = array('q', sorted(ids))
+    # Compact storage keeps large result sets from retaining one Python int per ID.
+    return ids if len(ids) > 50000 else tuple(ids)
 
 
 def collect_feature_ids_task(task, source, expression, sort_field=None, ascending=True):
@@ -307,7 +311,7 @@ def collect_values(task, source, index, expression):
                 break
             value = feature[index]
             if value is not None and value != NULL:
-                values.setdefault(str(value), value)
+                values.setdefault(attribute_text(value), value)
     finally:
         features.close()
     return values, truncated
@@ -3551,7 +3555,11 @@ class FinderDialog(QDialog):
 
     def copy_rows(self):
         data = self.table_rows()
-        QApplication.clipboard().setText(clipboard_text(data))
+        layer = self.current_layer()
+        columns = [c for c in range(len(self.fields)) if not self.table.isColumnHidden(c)]
+        numeric = [i for i, column in enumerate(columns)
+                   if layer and field_kind(layer.fields()[column]) in ("integer", "number")]
+        QApplication.clipboard().setText(clipboard_text(data, numeric))
         self.status.setText("Copied {} row(s). Paste into Excel.".format(len(data) - 1))
 
     def export_csv(self):

@@ -74,8 +74,7 @@ implemented. External verification is listed explicitly below.
 
 3. The builder checks metadata, runtime file membership, ZIP integrity, size,
    and equality with source files.
-4. The current metadata produces `dist/quicktable_latest-2.00.zip`. Version
-   2.00 is retained at the author's request for the plugin update. The
+4. The current metadata produces `dist/quicktable_latest-2.0.1.zip`. The
    changelog and README have been updated together.
 5. Install the ZIP into a disposable QGIS profile and repeat the manual
    checks. Record the QGIS version, OS, provider, and results.
