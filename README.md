@@ -63,6 +63,10 @@ visible fields; drag a column border to resize it. The column filter menu also
 offers text wrapping and numeric display formats. Numeric formatting changes
 the display, not the stored value.
 
+To resize columns to their names, open **Columns** and click **Fit widths to
+column names**. The change takes effect immediately, including for hidden and
+wrapped columns; you can still drag column borders afterward.
+
 ### Results, selection and statistics
 
 Choose a page size at the bottom of the window. **All results** disables

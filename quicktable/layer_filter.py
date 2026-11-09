@@ -1718,6 +1718,18 @@ class FinderDialog(QDialog):
         if not self.closing:
             self.resize_wrapped_rows()
 
+    def fit_column_widths_to_names(self):
+        key = self.column_settings_key()
+        if not key:
+            return
+        metrics = self.table.horizontalHeader().fontMetrics()
+        widths = self.saved_column_widths(key)
+        for name in self.fields:
+            widths[name] = max(90, metrics.horizontalAdvance(name) + 36)
+        self.pending_column_widths[key] = widths
+        self.apply_column_layout()
+        self.column_layout_timer.start()
+
     def set_column_wrap(self, name, enabled):
         key = self.column_settings_key()
         if not key or name not in self.fields:
@@ -1839,6 +1851,10 @@ class FinderDialog(QDialog):
         show_all.clicked.connect(lambda: [columns.item(i).setCheckState(Qt.CheckState.Checked)
                                          for i in range(columns.count())])
         layout.addWidget(show_all)
+        fit_widths = QPushButton("Fit widths to column names")
+        fit_widths.setToolTip("Immediately resize all columns to fit their names")
+        fit_widths.clicked.connect(self.fit_column_widths_to_names)
+        layout.addWidget(fit_widths)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Apply")
         layout.addWidget(buttons)

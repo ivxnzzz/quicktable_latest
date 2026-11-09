@@ -968,6 +968,25 @@ class QgisIntegrationTests(unittest.TestCase):
         self.assertLess(dialog.table.columnWidth(index), dialog.table.viewport().width() // 2)
         self.assertLessEqual(abs(dialog.table.columnWidth(index) - original_width), 5)
 
+    def test_fit_column_widths_to_names_replaces_saved_widths(self):
+        layer = QgsVectorLayer("None?field=short:string&field=longer_field_name:string", "fit widths", "memory")
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        QgsApplication.processEvents()
+        key = dialog.column_settings_key()
+        self.addCleanup(QSettings().remove, key)
+        dialog.table.setColumnWidth(0, 500)
+        dialog.set_column_wrap("longer_field_name", True)
+        dialog.table.setColumnWidth(1, 550)
+        dialog.fit_column_widths_to_names()
+        expected = [max(90, dialog.table.horizontalHeader().fontMetrics().horizontalAdvance(name) + 36)
+                    for name in dialog.fields]
+        self.assertEqual([dialog.table.columnWidth(i) for i in range(2)], expected)
+        self.assertIn("longer_field_name", dialog.wrapped_fields())
+        dialog.save_column_widths()
+        dialog.render_page()
+        self.assertEqual([dialog.table.columnWidth(i) for i in range(2)], expected)
+
     def test_adding_field_refits_previous_saved_wide_columns(self):
         layer = QgsVectorLayer("None?field=name:string&field=folders:string", "compact", "memory")
         dialog = self.create_dialog(layer)
