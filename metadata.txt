@@ -4,8 +4,8 @@ qgisMinimumVersion=3.44
 qgisMaximumVersion=3.99
 description=Easy search, filtering and attribute editing for vector layers
 about=Open QuickTable from the Plugins menu or toolbar. Search vector layers, filter with simple operators, choose visible columns, select features, edit writable attributes, and export spreadsheet-safe results.
-version=2.0
-changelog=2.0 - Mark the plugin as non-experimental.
+version=2.00
+changelog=2.00 - Mark the plugin as non-experimental and fix missing PostGIS data type names when adding fields.
     1.04 - Preserve the chosen layer when minimizing, restoring or resizing QuickTable and when the QGIS active layer changes. Enable horizontal pixel scrolling.
     1.03 - Replace legacy Qt enum references and exec_ calls with shared Qt5/Qt6 APIs. QGIS 4 support remains unverified and is not advertised.
     1.02 - Remove the keyboard shortcut; open QuickTable from the Plugins menu or toolbar.

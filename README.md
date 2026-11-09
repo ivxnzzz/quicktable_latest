@@ -2,7 +2,7 @@
 
 Search, filter and edit vector-layer attributes in QGIS, including tables without geometry.
 
-**Version:** 2.0 | **Author:** Iven Paul Rolloque
+**Version:** 2.00 | **Author:** Iven Paul Rolloque
 
 ![QuickTable interface showing attribute filters and column statistics](https://raw.githubusercontent.com/ivxnzzz/quicktable_latest/main/docs/images/quicktable-interface.png)
 
@@ -77,7 +77,7 @@ Build the release ZIP from the repository root:
 python tools/package_plugin.py
 ```
 
-This creates `dist/quicktable_latest-2.0.zip` with only the runtime files,
+This creates `dist/quicktable_latest-2.00.zip` with only the runtime files,
 metadata, documentation, license and icons. Development files are excluded.
 
 The verified target is Windows with QGIS 3.44.12. Linux and macOS have not
