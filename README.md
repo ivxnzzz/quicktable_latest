@@ -42,6 +42,10 @@ Restart QGIS after updating an existing installation.
    **Discard edits** to roll back all pending changes on the layer.
 5. Copy rows or export CSV using the toolbar.
 
+In the **Fields** menu, add multiple fields with their own types, lengths and
+precision. To delete multiple fields, check them and confirm the deletion.
+Each operation can be undone before saving.
+
 Nearby distances use the layer CRS units. Editing requires a writable data source.
 
 ## Development

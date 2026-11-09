@@ -20,7 +20,7 @@ from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                                  QCompleter, QCheckBox, QMessageBox, QFrame,
                                  QListWidget, QListWidgetItem, QDialogButtonBox,
                                  QFontComboBox, QSpinBox, QStyledItemDelegate, QStyle,
-                                 QMenu, QInputDialog, QPlainTextEdit, QFormLayout)
+                                 QMenu, QInputDialog, QPlainTextEdit, QFormLayout, QScrollArea, QWidget)
 from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint, QDate, QByteArray,
                               QItemSelection, QItemSelectionModel)
 from qgis.PyQt.QtGui import QAction, QPalette, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush, QPixmap, QPainter
@@ -620,44 +620,96 @@ class SettingsDialog(QDialog):
 class AddFieldDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Add field")
+        self.setWindowTitle("Add fields")
         self.setStyleSheet(parent.styleSheet())
         layout = QVBoxLayout(self)
-        form = QFormLayout()
-        self.name = QLineEdit()
-        self.name.setPlaceholderText("Field name")
-        self.field_type = QComboBox()
-        for label, value in (("Text", QMetaType.Type.QString), ("Whole number (32-bit)", QMetaType.Type.Int),
-                             ("Whole number (64-bit)", QMetaType.Type.LongLong), ("Decimal number", QMetaType.Type.Double),
-                             ("Date", QMetaType.Type.QDate), ("True / False", QMetaType.Type.Bool)):
-            self.field_type.addItem(label, value)
-        self.length = QSpinBox()
-        self.length.setRange(0, 255)
-        self.length.setSpecialValueText("Default")
-        self.length.setToolTip("Declared field length; Default lets the data source choose. Support varies by format.")
-        self.precision = QSpinBox()
-        self.precision.setRange(0, 30)
-        self.precision.setToolTip("Declared decimal places. Support varies by data source.")
-        form.addRow("Name", self.name)
-        form.addRow("Type", self.field_type)
-        form.addRow("Length", self.length)
-        form.addRow("Decimal precision", self.precision)
-        layout.addLayout(form)
-        note = QLabel("The new field starts empty. Length and precision depend on the data source. Save edits to commit.")
+        self.resize(680, 360)
+        self.rows = []
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        row_area = QWidget()
+        self.rows_layout = QVBoxLayout(row_area)
+        scroll.setWidget(row_area)
+        layout.addWidget(scroll)
+        add_row = QPushButton("Add another field")
+        add_row.clicked.connect(self.add_row)
+        layout.addWidget(add_row)
+        self.add_row()
+        first = self.rows[0]
+        self.name, self.field_type = first.name, first.field_type
+        self.length, self.precision = first.length, first.precision
+        note = QLabel("Each field starts empty. Save edits to commit.")
         note.setWordWrap(True)
         layout.addWidget(note)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add field")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add fields")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self.field_type.currentIndexChanged.connect(self.update_type)
-        self.update_type()
 
-    def update_type(self):
-        kind = self.field_type.currentData()
-        self.length.setEnabled(kind in (QMetaType.Type.QString, QMetaType.Type.Int, QMetaType.Type.LongLong, QMetaType.Type.Double))
-        self.precision.setEnabled(kind == QMetaType.Type.Double)
+    def add_row(self, *args):
+        container = QFrame(self)
+        form = QFormLayout(container)
+        name = QLineEdit()
+        name.setPlaceholderText("Field name")
+        field_type = QComboBox()
+        for label, value in (("Text", QMetaType.Type.QString), ("Whole number (32-bit)", QMetaType.Type.Int),
+                             ("Whole number (64-bit)", QMetaType.Type.LongLong), ("Decimal number", QMetaType.Type.Double),
+                             ("Date", QMetaType.Type.QDate), ("True / False", QMetaType.Type.Bool)):
+            field_type.addItem(label, value)
+        length = QSpinBox()
+        length.setRange(0, 255)
+        length.setSpecialValueText("Default")
+        precision = QSpinBox()
+        precision.setRange(0, 30)
+        row = SimpleNamespace(container=container, name=name, field_type=field_type,
+                              length=length, precision=precision)
+        form.addRow("Name", name)
+        form.addRow("Type", field_type)
+        form.addRow("Length", length)
+        form.addRow("Decimal precision", precision)
+        if self.rows:
+            remove = QPushButton("Remove field")
+            remove.clicked.connect(lambda: self.remove_row(row))
+            form.addRow(remove)
+        self.rows.append(row)
+        self.rows_layout.addWidget(container)
+        field_type.currentIndexChanged.connect(lambda: self.update_type(row))
+        self.update_type(row)
+
+    def remove_row(self, row):
+        self.rows.remove(row)
+        row.container.deleteLater()
+
+    def update_type(self, row):
+        kind = row.field_type.currentData()
+        row.length.setEnabled(kind in (QMetaType.Type.QString, QMetaType.Type.Int, QMetaType.Type.LongLong, QMetaType.Type.Double))
+        row.precision.setEnabled(kind == QMetaType.Type.Double)
+
+
+class DeleteFieldsDialog(QDialog):
+    def __init__(self, parent, names):
+        super().__init__(parent)
+        self.setWindowTitle("Delete fields")
+        self.setStyleSheet(parent.styleSheet())
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Select fields to delete:"))
+        self.list = QListWidget()
+        for name in names:
+            item = QListWidgetItem(name, self.list)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+        layout.addWidget(self.list)
+        layout.addWidget(QLabel("Check the fields you want to delete."))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Continue")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_names(self):
+        return [self.list.item(i).text() for i in range(self.list.count())
+                if self.list.item(i).checkState() == Qt.CheckState.Checked]
 
 
 class BulkEditDialog(QDialog):
@@ -825,6 +877,7 @@ class FinderDialog(QDialog):
         self.statistics_version = 0
         self.statistics_key = None
         self.pending_notice = None
+        self.pending_added_field = None
         self.hooked_layer = None
         self.hooked_id = None
         self.hooked_undo_stack = None
@@ -2553,6 +2606,14 @@ class FinderDialog(QDialog):
                 self.table.horizontalHeader().setSortIndicator(self.fields.index(self.sort_field), self.sort_order)
             self.table.horizontalHeader().setSortIndicatorShown(self.sort_field in self.fields)
             self.apply_column_layout()
+            pending = self.pending_added_field
+            self.pending_added_field = None
+            if pending and pending[0] == layer.id() and pending[1] in self.fields:
+                column = self.fields.index(pending[1])
+                if self.table.rowCount():
+                    self.table.scrollToItem(self.table.item(0, column), QAbstractItemView.ScrollHint.EnsureVisible)
+                else:
+                    self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().maximum())
             self.select_table_fids(previous_selection)
             message = ("No matching records. Adjust a column filter or search to see results."
                        if not self.result_ids else
@@ -2849,41 +2910,42 @@ class FinderDialog(QDialog):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             dialog.deleteLater()
             return
-        name = dialog.name.text().strip()
-        field_type = dialog.field_type.currentData()
-        length = dialog.length.value() if dialog.length.isEnabled() else 0
-        precision = dialog.precision.value() if dialog.precision.isEnabled() else 0
+        specs = [(row.name.text().strip(), row.field_type.currentData(),
+                  row.length.value() if row.length.isEnabled() else 0,
+                  row.precision.value() if row.precision.isEnabled() else 0) for row in dialog.rows]
         dialog.deleteLater()
-        if not name:
-            QMessageBox.warning(self, "Add field", "Enter a field name.")
+        names = [spec[0] for spec in specs]
+        if any(not name for name in names):
+            QMessageBox.warning(self, "Add field", "Enter a name for each field.")
             return
         if self.current_layer() != layer or not layer.isEditable():
             self.status.setText("Layer or edit mode changed. Field was not added.")
             return
-        if layer.fields().lookupField(name) >= 0:
-            QMessageBox.warning(self, "Add field", "A field with that name already exists.")
+        if len({item.casefold() for item in names}) != len(names) or any(layer.fields().lookupField(item) >= 0 for item in names):
+            QMessageBox.warning(self, "Add field", "Field names must be unique and must not already exist.")
             return
-        if length and precision >= length:
+        if any(length and precision >= length for _, _, length, precision in specs):
             QMessageBox.warning(self, "Add field", "Decimal precision must be smaller than the field length.")
             return
         command_open = False
         error = None
         self.own_edit = True
         try:
-            layer.beginEditCommand("QuickTable: add field {}".format(name))
+            layer.beginEditCommand("QuickTable: add {} field(s)".format(len(names)))
             command_open = True
-            type_name = ""
-            if layer.providerType() == "postgres":
-                type_name = {
-                    QMetaType.Type.QString: "varchar" if length else "text",
-                    QMetaType.Type.Int: "int4",
-                    QMetaType.Type.LongLong: "int8",
-                    QMetaType.Type.Double: "numeric" if length else "float8",
-                    QMetaType.Type.QDate: "date",
-                    QMetaType.Type.Bool: "bool",
-                }[field_type]
-            if not layer.addAttribute(QgsField(name, field_type, type_name, len=length, prec=precision)):
-                raise RuntimeError("The data source rejected the field name or type.")
+            for field_name, field_type, length, precision in specs:
+                type_name = ""
+                if layer.providerType() == "postgres":
+                    type_name = {
+                        QMetaType.Type.QString: "varchar" if length else "text",
+                        QMetaType.Type.Int: "int4",
+                        QMetaType.Type.LongLong: "int8",
+                        QMetaType.Type.Double: "numeric" if length else "float8",
+                        QMetaType.Type.QDate: "date",
+                        QMetaType.Type.Bool: "bool",
+                    }[field_type]
+                if not layer.addAttribute(QgsField(field_name, field_type, type_name, len=length, prec=precision)):
+                    raise RuntimeError("The data source rejected field '{}' or its type.".format(field_name))
             layer.updateFields()
             layer.endEditCommand()
             command_open = False
@@ -2893,9 +2955,17 @@ class FinderDialog(QDialog):
                 layer.destroyEditCommand()
         finally:
             self.own_edit = False
+        if error is None:
+            key = self.column_settings_key()
+            hidden = QSettings().value(key, []) if key else []
+            if isinstance(hidden, str):
+                hidden = [hidden]
+            if key and any(item in (hidden or []) for item in names):
+                QSettings().setValue(key, [item for item in hidden if item not in names])
+            self.pending_added_field = (layer.id(), names[0])
         self.soft_refresh()
         self.status.setText("Could not add field: " + error if error else
-                            "Added field '{}'; save edits to commit.".format(name))
+                            "Added {} field(s); save edits to commit.".format(len(names)))
 
     @staticmethod
     def deletable_field_indices(layer):
@@ -2919,29 +2989,37 @@ class FinderDialog(QDialog):
             self.status.setText("No deletable fields are available.")
             return
         names = [layer.fields()[i].name() for i in indices]
-        name, ok = QInputDialog.getItem(self, "Delete field", "Field to delete:", names, 0, False)
-        if not ok:
+        dialog = DeleteFieldsDialog(self, names)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            dialog.deleteLater()
             return
-        index = layer.fields().indexFromName(name)
-        question = ("Delete field '{}' from '{}'?\n\nThis removes the attribute and its values from every feature. "
-                    "The deletion remains pending until Save edits; you can undo it before saving.").format(name, layer.name())
-        if QMessageBox.question(self, "Delete field", question, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        selected = dialog.selected_names()
+        dialog.deleteLater()
+        if not selected:
+            self.status.setText("No fields selected.")
+            return
+        question = ("Delete {} field(s) from '{}'?\n\n{}\n\nThis removes their values from every feature. "
+                    "The deletion remains pending until Save edits; you can undo it before saving.").format(
+                        len(selected), layer.name(), "\n".join(selected))
+        if QMessageBox.question(self, "Delete fields", question, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                                 QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
             return
+        indices = [layer.fields().indexFromName(name) for name in selected]
+        allowed = set(self.deletable_field_indices(layer))
         if (self.current_layer() != layer or not layer.isEditable() or layer.readOnly()
-                or index < 0 or index >= layer.fields().count() or layer.fields()[index].name() != name
-                or index not in self.deletable_field_indices(layer)
+                or any(index < 0 or index not in allowed for index in indices)
                 or not layer.dataProvider().capabilities() & QgsVectorDataProvider.Capability.DeleteAttributes):
-            self.status.setText("The layer or field changed. Field deletion canceled.")
+            self.status.setText("The layer or fields changed. Field deletion canceled.")
             return
         command_open = False
         error = None
         self.own_edit = True
         try:
-            layer.beginEditCommand("QuickTable: delete field {}".format(name))
+            layer.beginEditCommand("QuickTable: delete {} field(s)".format(len(selected)))
             command_open = True
-            if not layer.deleteAttribute(index):
-                raise RuntimeError("The data source refused to delete the field.")
+            for index in sorted(indices, reverse=True):
+                if not layer.deleteAttribute(index):
+                    raise RuntimeError("The data source refused to delete a field.")
             layer.updateFields()
             layer.endEditCommand()
             command_open = False
@@ -2952,8 +3030,8 @@ class FinderDialog(QDialog):
         finally:
             self.own_edit = False
         self.soft_refresh()
-        self.status.setText("Could not delete field: " + error if error else
-                            "Deleted field '{}'; save edits to commit.".format(name))
+        self.status.setText("Could not delete fields: " + error if error else
+                            "Deleted {} field(s); save edits to commit.".format(len(selected)))
 
     def bulk_edit(self):
         layer = self.current_layer()

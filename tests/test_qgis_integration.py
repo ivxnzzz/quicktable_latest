@@ -902,6 +902,34 @@ class QgisIntegrationTests(unittest.TestCase):
                 layer.undoStack().undo()
                 self.assertEqual(layer.fields().indexFromName("new_number"), -1)
 
+    def test_added_field_is_visible_and_scrolled_into_view(self):
+        for count in (0, 3):
+            with self.subTest(feature_count=count):
+                layer = self.make_layer(count)
+                dialog = self.create_dialog(layer)
+                dialog.resize(420, 400)
+                dialog.show()
+                QgsApplication.processEvents()
+                dialog.edit_cb.setChecked(True)
+                settings = QSettings()
+                key = dialog.column_settings_key()
+                settings.setValue(key, ["new_value"])
+                self.addCleanup(settings.remove, key)
+                def accept_options(options):
+                    options.name.setText("new_value")
+                    return QDialog.DialogCode.Accepted
+                with patch.object(self.plugin.AddFieldDialog, "exec", accept_options):
+                    dialog.add_field()
+                self.wait_for_results(dialog)
+                QgsApplication.processEvents()
+                index = dialog.fields.index("new_value")
+                self.assertEqual(dialog.table.horizontalHeaderItem(index).text(), "new_value")
+                self.assertFalse(dialog.table.isColumnHidden(index))
+                position = dialog.table.horizontalHeader().sectionViewportPosition(index)
+                self.assertGreaterEqual(position + dialog.table.columnWidth(index), 1)
+                self.assertLess(position, dialog.table.viewport().width())
+                self.assertNotIn("new_value", settings.value(key, []))
+
     def test_postgres_added_fields_have_sql_type_names(self):
         cases = ((QMetaType.Type.QString, 0, "text"),
                  (QMetaType.Type.QString, 80, "varchar"),
@@ -978,12 +1006,15 @@ class QgisIntegrationTests(unittest.TestCase):
         layer.dataProvider().addFeatures([feature])
         dialog = self.create_dialog(layer)
         dialog.edit_cb.setChecked(True)
-        with patch.object(self.plugin.QInputDialog, "getItem", return_value=("remove", True)), \
+        def select_remove(options):
+            options.list.findItems("remove", Qt.MatchFlag.MatchExactly)[0].setCheckState(Qt.CheckState.Checked)
+            return QDialog.DialogCode.Accepted
+        with patch.object(self.plugin.DeleteFieldsDialog, "exec", select_remove), \
              patch.object(self.plugin.QMessageBox, "question", return_value=self.plugin.QMessageBox.Cancel):
             dialog.delete_field()
         self.assertGreaterEqual(layer.fields().indexFromName("remove"), 0)
         self.assertEqual(layer.undoStack().count(), 0)
-        with patch.object(self.plugin.QInputDialog, "getItem", return_value=("remove", True)), \
+        with patch.object(self.plugin.DeleteFieldsDialog, "exec", select_remove), \
              patch.object(self.plugin.QMessageBox, "question", return_value=self.plugin.QMessageBox.Yes):
             dialog.delete_field()
         self.assertEqual(layer.fields().indexFromName("remove"), -1, dialog.status.text())
@@ -991,6 +1022,47 @@ class QgisIntegrationTests(unittest.TestCase):
         layer.undoStack().undo()
         self.assertGreaterEqual(layer.fields().indexFromName("remove"), 0)
         self.assertEqual(next(layer.getFeatures())["remove"], "original")
+
+    def test_add_and_delete_multiple_fields_as_single_undo_commands(self):
+        layer = self.make_layer(2)
+        dialog = self.create_dialog(layer)
+        dialog.edit_cb.setChecked(True)
+        def add_options(options):
+            options.name.setText("first_new")
+            options.add_row()
+            options.rows[-1].name.setText("second_new")
+            options.rows[-1].field_type.setCurrentIndex(options.rows[-1].field_type.findData(QMetaType.Type.Int))
+            options.add_row()
+            options.rows[-1].name.setText("third_new")
+            options.rows[-1].field_type.setCurrentIndex(options.rows[-1].field_type.findData(QMetaType.Type.Double))
+            options.rows[-1].length.setValue(12)
+            options.rows[-1].precision.setValue(3)
+            return QDialog.DialogCode.Accepted
+        with patch.object(self.plugin.AddFieldDialog, "exec", add_options):
+            dialog.add_field()
+        for name in ("first_new", "second_new", "third_new"):
+            self.assertGreaterEqual(layer.fields().indexFromName(name), 0)
+        self.assertEqual(layer.fields().field("first_new").type(), QMetaType.Type.QString)
+        self.assertEqual(layer.fields().field("second_new").type(), QMetaType.Type.Int)
+        self.assertEqual(layer.fields().field("third_new").type(), QMetaType.Type.Double)
+        self.assertEqual(layer.fields().field("third_new").length(), 12)
+        self.assertEqual(layer.fields().field("third_new").precision(), 3)
+        self.assertEqual(layer.undoStack().count(), 1)
+        def delete_options(options):
+            for name in ("first_new", "third_new"):
+                options.list.findItems(name, Qt.MatchFlag.MatchExactly)[0].setCheckState(Qt.CheckState.Checked)
+            return QDialog.DialogCode.Accepted
+        with patch.object(self.plugin.DeleteFieldsDialog, "exec", delete_options), \
+             patch.object(self.plugin.QMessageBox, "question", return_value=self.plugin.QMessageBox.Yes):
+            dialog.delete_field()
+        self.assertEqual(layer.fields().indexFromName("first_new"), -1)
+        self.assertEqual(layer.fields().indexFromName("third_new"), -1)
+        self.assertGreaterEqual(layer.fields().indexFromName("second_new"), 0)
+        layer.undoStack().undo()
+        self.assertGreaterEqual(layer.fields().indexFromName("first_new"), 0)
+        self.assertGreaterEqual(layer.fields().indexFromName("third_new"), 0)
+        layer.undoStack().undo()
+        self.assertEqual(layer.fields().indexFromName("second_new"), -1)
 
     def test_attribute_editing_across_geometry_types(self):
         for geometry in ("Point", "LineString", "Polygon", "MultiPoint", "MultiLineString", "MultiPolygon", "None"):
