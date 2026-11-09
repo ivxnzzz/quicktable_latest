@@ -930,6 +930,65 @@ class QgisIntegrationTests(unittest.TestCase):
                 self.assertLess(position, dialog.table.viewport().width())
                 self.assertNotIn("new_value", settings.value(key, []))
 
+    def test_automatic_column_width_uses_name_and_keeps_manual_resize(self):
+        layer = QgsVectorLayer("None?field=short:string&field=longer_column_name:string", "widths", "memory")
+        feature = QgsFeature(layer.fields())
+        feature.setAttributes(["x" * 500, "value"])
+        layer.dataProvider().addFeatures([feature])
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        QgsApplication.processEvents()
+        short_width = dialog.table.columnWidth(0)
+        long_width = dialog.table.columnWidth(1)
+        self.assertGreater(long_width, short_width)
+        self.assertLess(short_width, 250)
+        self.assertGreaterEqual(long_width, dialog.table.horizontalHeader().fontMetrics().horizontalAdvance("longer_column_name"))
+        dialog.table.setColumnWidth(0, 300)
+        dialog.render_page()
+        self.assertEqual(dialog.table.columnWidth(0), 300)
+
+    def test_adding_field_does_not_save_stretched_column_width(self):
+        layer = self.make_layer(2)
+        dialog = self.create_dialog(layer)
+        dialog.resize(1500, 500)
+        dialog.show()
+        QgsApplication.processEvents()
+        original_name = dialog.fields[-1]
+        original_width = dialog.table.columnWidth(len(dialog.fields) - 1)
+        self.assertLess(original_width, dialog.table.viewport().width() // 2)
+        dialog.edit_cb.setChecked(True)
+        def accept_options(options):
+            options.name.setText("new_value")
+            return QDialog.DialogCode.Accepted
+        with patch.object(self.plugin.AddFieldDialog, "exec", accept_options):
+            dialog.add_field()
+        self.wait_for_results(dialog)
+        QgsApplication.processEvents()
+        index = dialog.fields.index(original_name)
+        self.assertLess(dialog.table.columnWidth(index), dialog.table.viewport().width() // 2)
+        self.assertLessEqual(abs(dialog.table.columnWidth(index) - original_width), 5)
+
+    def test_adding_field_refits_previous_saved_wide_columns(self):
+        layer = QgsVectorLayer("None?field=name:string&field=folders:string", "compact", "memory")
+        dialog = self.create_dialog(layer)
+        dialog.resize(1200, 500)
+        dialog.show()
+        QgsApplication.processEvents()
+        dialog.table.setColumnWidth(1, 900)
+        self.assertEqual(dialog.table.columnWidth(1), 900)
+        dialog.edit_cb.setChecked(True)
+        def accept_options(options):
+            options.name.setText("lot")
+            return QDialog.DialogCode.Accepted
+        with patch.object(self.plugin.AddFieldDialog, "exec", accept_options):
+            dialog.add_field()
+        self.wait_for_results(dialog)
+        QgsApplication.processEvents()
+        self.assertLess(dialog.table.columnWidth(1), 200)
+        self.assertEqual(dialog.table.horizontalHeader().sectionPosition(2),
+                         dialog.table.columnWidth(0) + dialog.table.columnWidth(1))
+        self.assertLess(dialog.table.columnWidth(2), 200)
+
     def test_postgres_added_fields_have_sql_type_names(self):
         cases = ((QMetaType.Type.QString, 0, "text"),
                  (QMetaType.Type.QString, 80, "varchar"),
@@ -958,6 +1017,29 @@ class QgisIntegrationTests(unittest.TestCase):
                 self.assertEqual(field.typeName(), sql_type)
                 self.assertEqual(field.type(), kind)
                 self.assertEqual(field.length(), length)
+
+    def test_add_fields_dialog_rows_can_be_added_and_removed(self):
+        finder = self.create_dialog(self.make_layer(1))
+        for theme in ("light", "dark"):
+            finder.theme = theme
+            finder.apply_theme()
+            dialog = self.plugin.AddFieldDialog(finder)
+            dialog.show()
+            QgsApplication.processEvents()
+            dialog.name.setText("first")
+            dialog.add_to_list()
+            dialog.name.setText("second")
+            dialog.add_to_list()
+            self.assertEqual(dialog.fields_list.rowCount(), 2)
+            dialog.fields_list.selectRow(1)
+            dialog.move_selected(-1)
+            self.assertEqual([spec[0] for spec in dialog.field_specs()], ["second", "first"])
+            dialog.fields_list.selectRow(0)
+            dialog.remove_selected()
+            self.assertEqual([spec[0] for spec in dialog.field_specs()], ["first"])
+            self.assertFalse(dialog.grab().isNull())
+            dialog.close()
+            dialog.deleteLater()
 
     def test_add_decimal_field_retains_length_and_precision(self):
         layer = self.make_layer(1)
@@ -1029,14 +1111,14 @@ class QgisIntegrationTests(unittest.TestCase):
         dialog.edit_cb.setChecked(True)
         def add_options(options):
             options.name.setText("first_new")
-            options.add_row()
-            options.rows[-1].name.setText("second_new")
-            options.rows[-1].field_type.setCurrentIndex(options.rows[-1].field_type.findData(QMetaType.Type.Int))
-            options.add_row()
-            options.rows[-1].name.setText("third_new")
-            options.rows[-1].field_type.setCurrentIndex(options.rows[-1].field_type.findData(QMetaType.Type.Double))
-            options.rows[-1].length.setValue(12)
-            options.rows[-1].precision.setValue(3)
+            options.add_to_list()
+            options.name.setText("second_new")
+            options.field_type.setCurrentIndex(options.field_type.findData(QMetaType.Type.Int))
+            options.add_to_list()
+            options.name.setText("third_new")
+            options.field_type.setCurrentIndex(options.field_type.findData(QMetaType.Type.Double))
+            options.length.setValue(12)
+            options.precision.setValue(3)
             return QDialog.DialogCode.Accepted
         with patch.object(self.plugin.AddFieldDialog, "exec", add_options):
             dialog.add_field()

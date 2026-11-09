@@ -20,7 +20,7 @@ from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                                  QCompleter, QCheckBox, QMessageBox, QFrame,
                                  QListWidget, QListWidgetItem, QDialogButtonBox,
                                  QFontComboBox, QSpinBox, QStyledItemDelegate, QStyle,
-                                 QMenu, QInputDialog, QPlainTextEdit, QFormLayout, QScrollArea, QWidget)
+                                 QMenu, QInputDialog, QPlainTextEdit, QFormLayout, QGroupBox)
 from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint, QDate, QByteArray,
                               QItemSelection, QItemSelectionModel)
 from qgis.PyQt.QtGui import QAction, QPalette, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush, QPixmap, QPainter
@@ -377,21 +377,21 @@ QAbstractItemView {
 
 QPushButton {
     background: transparent; border: 1px solid @border; border-radius: 4px;
-    padding: 3px 10px; color: @text_soft;
+    padding: 3px 10px; color: @text_soft; font-weight: normal;
 }
 QPushButton:hover { border-color: @accent; color: @text_hi; }
-QPushButton:pressed { background: @press_bg; }
+QPushButton:pressed { background: transparent; border-color: @accent_press; color: @accent_press; }
 QPushButton:disabled { color: @dis_text; border-color: @dis_border; }
-QPushButton#primary { background: @accent; border: 1px solid @accent; color: @accent_text; font-weight: 700; }
-QPushButton#primary:hover { background: @accent_hi; border-color: @accent_hi; color: @accent_text; }
-QPushButton#primary:pressed { background: @accent_press; }
-QPushButton#primary:disabled { background: @pdis_bg; border-color: @pdis_bg; color: @pdis_text; }
+QPushButton#primary { background: transparent; border: 1px solid @accent; color: @accent; }
+QPushButton#primary:hover { background: transparent; border-color: @accent_hi; color: @accent_hi; }
+QPushButton#primary:pressed { background: transparent; border-color: @accent_press; color: @accent_press; }
+QPushButton#primary:disabled { background: transparent; border-color: @dis_border; color: @dis_text; }
 QPushButton#danger { color: @danger; border-color: @danger_border; }
 QPushButton#danger:hover { border-color: @danger; color: @danger_hi; }
 QPushButton#danger:disabled { color: @ddis_text; border-color: @dis_border; }
 QPushButton#theme { padding: 1px 8px; color: @muted; }
-QPushButton#sortOption:checked { background: @sel_bg; border-color: @accent; color: @sel_fg; }
-QPushButton#statsToggle:checked { background: @sel_bg; border-color: @accent; color: @sel_fg; }
+QPushButton#sortOption:checked { background: transparent; border: 2px solid @accent; color: @accent; }
+QPushButton#statsToggle:checked { background: transparent; border: 2px solid @accent; color: @accent; }
 
 QMenu { background: @surface; color: @text; border: 1px solid @border; padding: 4px; }
 QMenu::item { background: transparent; color: @text; padding: 6px 24px 6px 32px; border-radius: 3px; }
@@ -623,68 +623,120 @@ class AddFieldDialog(QDialog):
         self.setWindowTitle("Add fields")
         self.setStyleSheet(parent.styleSheet())
         layout = QVBoxLayout(self)
-        self.resize(680, 360)
-        self.rows = []
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        row_area = QWidget()
-        self.rows_layout = QVBoxLayout(row_area)
-        scroll.setWidget(row_area)
-        layout.addWidget(scroll)
-        add_row = QPushButton("Add another field")
-        add_row.clicked.connect(self.add_row)
-        layout.addWidget(add_row)
-        self.add_row()
-        first = self.rows[0]
-        self.name, self.field_type = first.name, first.field_type
-        self.length, self.precision = first.length, first.precision
-        note = QLabel("Each field starts empty. Save edits to commit.")
-        note.setWordWrap(True)
-        layout.addWidget(note)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add fields")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def add_row(self, *args):
-        container = QFrame(self)
-        form = QFormLayout(container)
-        name = QLineEdit()
-        name.setPlaceholderText("Field name")
-        field_type = QComboBox()
+        self.resize(640, 480)
+        self.queued = []
+        group = QGroupBox("New field")
+        form = QGridLayout(group)
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("Field name")
+        self.field_type = QComboBox()
         for label, value in (("Text", QMetaType.Type.QString), ("Whole number (32-bit)", QMetaType.Type.Int),
                              ("Whole number (64-bit)", QMetaType.Type.LongLong), ("Decimal number", QMetaType.Type.Double),
                              ("Date", QMetaType.Type.QDate), ("True / False", QMetaType.Type.Bool)):
-            field_type.addItem(label, value)
-        length = QSpinBox()
-        length.setRange(0, 255)
-        length.setSpecialValueText("Default")
-        precision = QSpinBox()
-        precision.setRange(0, 30)
-        row = SimpleNamespace(container=container, name=name, field_type=field_type,
-                              length=length, precision=precision)
-        form.addRow("Name", name)
-        form.addRow("Type", field_type)
-        form.addRow("Length", length)
-        form.addRow("Decimal precision", precision)
-        if self.rows:
-            remove = QPushButton("Remove field")
-            remove.clicked.connect(lambda: self.remove_row(row))
-            form.addRow(remove)
-        self.rows.append(row)
-        self.rows_layout.addWidget(container)
-        field_type.currentIndexChanged.connect(lambda: self.update_type(row))
-        self.update_type(row)
+            self.field_type.addItem(label, value)
+        self.length = QSpinBox()
+        self.length.setRange(0, 255)
+        self.length.setSpecialValueText("Default")
+        self.precision = QSpinBox()
+        self.precision.setRange(0, 30)
+        form.addWidget(QLabel("Name"), 0, 0)
+        form.addWidget(self.name, 0, 1, 1, 3)
+        form.addWidget(QLabel("Type"), 1, 0)
+        form.addWidget(self.field_type, 1, 1, 1, 3)
+        form.addWidget(QLabel("Length"), 2, 0)
+        form.addWidget(self.length, 2, 1)
+        form.addWidget(QLabel("Decimal precision"), 2, 2)
+        form.addWidget(self.precision, 2, 3)
+        add = QPushButton("Add to fields list")
+        add.setObjectName("primary")
+        add.clicked.connect(self.add_to_list)
+        form.addWidget(add, 3, 1, 1, 3)
+        layout.addWidget(group)
+        listing = QGroupBox("Fields list")
+        list_layout = QVBoxLayout(listing)
+        self.fields_list = QTableWidget(0, 4)
+        self.fields_list.setHorizontalHeaderLabels(["Name", "Type", "Length", "Precision"])
+        self.fields_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.fields_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.fields_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.fields_list.verticalHeader().hide()
+        self.fields_list.horizontalHeader().setStretchLastSection(True)
+        list_row = QHBoxLayout()
+        list_row.addWidget(self.fields_list, 1)
+        order_buttons = QVBoxLayout()
+        up = QPushButton("↑")
+        up.setToolTip("Move field up")
+        up.clicked.connect(lambda: self.move_selected(-1))
+        down = QPushButton("↓")
+        down.setToolTip("Move field down")
+        down.clicked.connect(lambda: self.move_selected(1))
+        order_buttons.addWidget(up)
+        order_buttons.addWidget(down)
+        order_buttons.addStretch(1)
+        list_row.addLayout(order_buttons)
+        list_layout.addLayout(list_row)
+        remove = QPushButton("Remove selected field")
+        remove.clicked.connect(self.remove_selected)
+        list_layout.addWidget(remove, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(listing, 1)
+        self.field_type.currentIndexChanged.connect(self.update_type)
+        self.update_type()
+        note = QLabel("Each field starts empty. Save edits to commit.")
+        note.setWordWrap(True)
+        footer = QHBoxLayout()
+        footer.addWidget(note, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add Fields")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        footer.addWidget(buttons)
+        layout.addLayout(footer)
 
-    def remove_row(self, row):
-        self.rows.remove(row)
-        row.container.deleteLater()
+    def current_spec(self):
+        return (self.name.text().strip(), self.field_type.currentData(),
+                self.length.value() if self.length.isEnabled() else 0,
+                self.precision.value() if self.precision.isEnabled() else 0)
 
-    def update_type(self, row):
-        kind = row.field_type.currentData()
-        row.length.setEnabled(kind in (QMetaType.Type.QString, QMetaType.Type.Int, QMetaType.Type.LongLong, QMetaType.Type.Double))
-        row.precision.setEnabled(kind == QMetaType.Type.Double)
+    def field_specs(self):
+        current = self.current_spec()
+        return self.queued + ([current] if current[0] else [])
+
+    def add_to_list(self):
+        spec = self.current_spec()
+        if not spec[0]:
+            self.name.setFocus()
+            return
+        self.queued.append(spec)
+        row = self.fields_list.rowCount()
+        self.fields_list.insertRow(row)
+        for col, text in enumerate((spec[0], self.field_type.currentText(), str(spec[2]) if spec[2] else "Default", str(spec[3]))):
+            self.fields_list.setItem(row, col, QTableWidgetItem(text))
+        self.name.clear()
+        self.name.setFocus()
+
+    def remove_selected(self):
+        row = self.fields_list.currentRow()
+        if row >= 0:
+            self.queued.pop(row)
+            self.fields_list.removeRow(row)
+
+    def move_selected(self, direction):
+        row = self.fields_list.currentRow()
+        target = row + direction
+        if row < 0 or target < 0 or target >= len(self.queued):
+            return
+        self.queued[row], self.queued[target] = self.queued[target], self.queued[row]
+        for column in range(self.fields_list.columnCount()):
+            first = self.fields_list.takeItem(row, column)
+            second = self.fields_list.takeItem(target, column)
+            self.fields_list.setItem(row, column, second)
+            self.fields_list.setItem(target, column, first)
+        self.fields_list.selectRow(target)
+
+    def update_type(self):
+        kind = self.field_type.currentData()
+        self.length.setEnabled(kind in (QMetaType.Type.QString, QMetaType.Type.Int, QMetaType.Type.LongLong, QMetaType.Type.Double))
+        self.precision.setEnabled(kind == QMetaType.Type.Double)
 
 
 class DeleteFieldsDialog(QDialog):
@@ -1030,7 +1082,7 @@ class FinderDialog(QDialog):
         self.table.setToolTip("Click a row to select it. Ctrl-click adds/removes rows; Shift-click selects a range.")
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.table.horizontalHeader().setToolTip("Click a column name to sort; click its filter below for filtering and column options. Drag a border to resize.")
         self.table.setShowGrid(False)
@@ -1280,7 +1332,7 @@ class FinderDialog(QDialog):
                              (self.btn_nearby, "nearby"), (self.btn_fields, "fields")):
             button.setIcon(toolbar_icon(name, THEMES[self.theme]["text"]))
             button.setIconSize(QSize(16, 16))
-        self.btn_save.setIcon(toolbar_icon("save", THEMES[self.theme]["accent_text"]))
+        self.btn_save.setIcon(toolbar_icon("save", THEMES[self.theme]["accent"]))
         self.btn_save.setIconSize(QSize(16, 16))
         self.btn_add_field.setIcon(toolbar_icon("fieldAdd", THEMES[self.theme]["text"]))
         self.btn_delete_field.setIcon(toolbar_icon("fieldDelete", THEMES[self.theme]["text"]))
@@ -1717,9 +1769,8 @@ class FinderDialog(QDialog):
             wrapped = self.wrapped_fields()
             number_formats = self.number_formats()
             visible = [column for column in range(len(self.fields)) if not self.table.isColumnHidden(column)]
-            # A stretched wrapped last column would override its remembered width.
-            self.table.horizontalHeader().setStretchLastSection(
-                not visible or self.fields[visible[-1]] not in wrapped)
+            # Keep viewport expansion from being saved as an explicit field width.
+            self.table.horizontalHeader().setStretchLastSection(False)
             for column, name in enumerate(self.fields):
                 if name not in self.column_delegates:
                     self.column_delegates[name] = ColumnTextDelegate(self.table)
@@ -1747,12 +1798,10 @@ class FinderDialog(QDialog):
                 elif name in wrapped:
                     self.table.setColumnWidth(column, 280)
                 else:
-                    self.table.resizeColumnToContents(column)
+                    header = self.table.horizontalHeader()
+                    width = header.fontMetrics().horizontalAdvance(name) + 36
+                    self.table.setColumnWidth(column, max(90, width))
             self.resize_wrapped_rows()
-            for column in visible:
-                widths[self.fields[column]] = self.table.columnWidth(column)
-            self.pending_column_widths[key] = widths
-            self.column_layout_timer.start()
         finally:
             self.applying_column_layout = previous
 
@@ -2910,12 +2959,10 @@ class FinderDialog(QDialog):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             dialog.deleteLater()
             return
-        specs = [(row.name.text().strip(), row.field_type.currentData(),
-                  row.length.value() if row.length.isEnabled() else 0,
-                  row.precision.value() if row.precision.isEnabled() else 0) for row in dialog.rows]
+        specs = dialog.field_specs()
         dialog.deleteLater()
         names = [spec[0] for spec in specs]
-        if any(not name for name in names):
+        if not names or any(not name for name in names):
             QMessageBox.warning(self, "Add field", "Enter a name for each field.")
             return
         if self.current_layer() != layer or not layer.isEditable():
@@ -2962,6 +3009,16 @@ class FinderDialog(QDialog):
                 hidden = [hidden]
             if key and any(item in (hidden or []) for item in names):
                 QSettings().setValue(key, [item for item in hidden if item not in names])
+            if key:
+                # Refit regular columns when the schema grows, including widths
+                # saved by older versions which stretched the last column.
+                wrapped = self.wrapped_fields()
+                widths = self.saved_column_widths(key)
+                for field_name in list(widths):
+                    if field_name not in wrapped:
+                        del widths[field_name]
+                self.pending_column_widths[key] = widths
+                self.column_layout_timer.start()
             self.pending_added_field = (layer.id(), names[0])
         self.soft_refresh()
         self.status.setText("Could not add field: " + error if error else
