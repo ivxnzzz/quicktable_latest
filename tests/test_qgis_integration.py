@@ -902,6 +902,35 @@ class QgisIntegrationTests(unittest.TestCase):
                 layer.undoStack().undo()
                 self.assertEqual(layer.fields().indexFromName("new_number"), -1)
 
+    def test_postgres_added_fields_have_sql_type_names(self):
+        cases = ((QMetaType.Type.QString, 0, "text"),
+                 (QMetaType.Type.QString, 80, "varchar"),
+                 (QMetaType.Type.Int, 0, "int4"),
+                 (QMetaType.Type.LongLong, 0, "int8"),
+                 (QMetaType.Type.Double, 0, "float8"),
+                 (QMetaType.Type.Double, 12, "numeric"),
+                 (QMetaType.Type.QDate, 0, "date"),
+                 (QMetaType.Type.Bool, 0, "bool"))
+        for kind, length, sql_type in cases:
+            with self.subTest(sql_type=sql_type):
+                layer = self.make_layer(1)
+                dialog = self.create_dialog(layer)
+                dialog.edit_cb.setChecked(True)
+                def accept_options(options):
+                    options.name.setText("new_value")
+                    options.field_type.setCurrentIndex(options.field_type.findData(kind))
+                    options.length.setValue(length)
+                    return QDialog.DialogCode.Accepted
+                with patch.object(self.plugin.AddFieldDialog, "exec", accept_options), \
+                     patch.object(layer, "providerType", return_value="postgres"), \
+                     patch.object(layer, "addAttribute", wraps=layer.addAttribute) as add:
+                    dialog.add_field()
+                add.assert_called_once()
+                field = add.call_args.args[0]
+                self.assertEqual(field.typeName(), sql_type)
+                self.assertEqual(field.type(), kind)
+                self.assertEqual(field.length(), length)
+
     def test_add_decimal_field_retains_length_and_precision(self):
         layer = self.make_layer(1)
         dialog = self.create_dialog(layer)

@@ -2872,7 +2872,17 @@ class FinderDialog(QDialog):
         try:
             layer.beginEditCommand("QuickTable: add field {}".format(name))
             command_open = True
-            if not layer.addAttribute(QgsField(name, field_type, len=length, prec=precision)):
+            type_name = ""
+            if layer.providerType() == "postgres":
+                type_name = {
+                    QMetaType.Type.QString: "varchar" if length else "text",
+                    QMetaType.Type.Int: "int4",
+                    QMetaType.Type.LongLong: "int8",
+                    QMetaType.Type.Double: "numeric" if length else "float8",
+                    QMetaType.Type.QDate: "date",
+                    QMetaType.Type.Bool: "bool",
+                }[field_type]
+            if not layer.addAttribute(QgsField(name, field_type, type_name, len=length, prec=precision)):
                 raise RuntimeError("The data source rejected the field name or type.")
             layer.updateFields()
             layer.endEditCommand()
