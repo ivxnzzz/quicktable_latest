@@ -2,7 +2,7 @@
 
 Search, filter and edit vector-layer attributes in QGIS—even tables without geometry.
 
-**Version 2.00** · QGIS 3.44+ (3.x) · By Iven Paul Rolloque
+**Stable release 2.00** · QGIS 3.44+ (3.x) · By Iven Paul Rolloque
 
 ![QuickTable interface with attribute filters and column statistics](https://raw.githubusercontent.com/ivxnzzz/quicktable_latest/main/docs/images/quicktable-interface.png)
 
@@ -19,13 +19,15 @@ _Sample data: Philippine PSGC boundaries from [altcoder/philippines-psgc-shapefi
 
 ## 📦 Install
 
-QuickTable is available as an **experimental plugin** in the QGIS Plugin Repository.
+**QuickTable 2.00 is available as a stable release** in the [QGIS Plugin Repository](https://plugins.qgis.org/).
 
 1. Open **Plugins → Manage and Install Plugins**.
-2. In **Settings**, enable **Show also Experimental Plugins**.
-3. Open **All**, search for **QuickTable** and click **Install Experimental Plugin**.
+2. In **All**, search for **QuickTable**.
+3. Select it and click **Install Plugin**. If already installed, use **Upgrade Plugin** when available.
 
-For a ZIP installation, choose **Install from ZIP** and select `quicktable_latest-2.00.zip`. Restart QGIS after updating.
+Prefer a ZIP? Choose **Install from ZIP** and select `quicktable_latest-2.00.zip`.
+
+Restart QGIS after updating.
 
 Requires QGIS **3.44 or later in the 3.x series**. No extra Python packages are needed. QGIS 4 is not supported.
 
