@@ -8,6 +8,8 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from priority_checks import PriorityChecks
+from provider_checks import ProviderChecks
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
@@ -21,7 +23,7 @@ except ImportError:
 
 
 @unittest.skipIf(QgsApplication is None, "Requires QGIS Python environment")
-class QgisIntegrationTests(unittest.TestCase):
+class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.owns_app = QgsApplication.instance() is None
@@ -152,7 +154,7 @@ class QgisIntegrationTests(unittest.TestCase):
                                  part_expr=lambda *args: None)
         expression = self.plugin.FinderDialog.build_expr(finder)
         self.assertFalse(QgsExpression(expression).hasParserError())
-        self.assertIn(QgsExpression.quotedString("%" + edit.text() + "%"), expression)
+        self.assertIn(QgsExpression.quotedString(edit.text()), expression)
 
     def test_integer_fields_keep_large_exact_values(self):
         field = QgsField("id", QMetaType.Type.LongLong, "numeric")
@@ -532,6 +534,122 @@ class QgisIntegrationTests(unittest.TestCase):
         dialog.change_undo_stack(True)
         self.assertEqual(layer.getFeature(fid)[0], "changed")
 
+    def wait_for_edit_refresh(self, dialog):
+        deadline = time.monotonic() + 10
+        while (dialog.timer.isActive() or dialog.query_task is not None) and time.monotonic() < deadline:
+            QgsApplication.processEvents()
+            time.sleep(0.01)
+        self.assertFalse(dialog.timer.isActive(), "Edit refresh did not finish")
+        self.wait_for_results(dialog)
+
+    def test_cell_edit_removes_nonmatching_result_with_statistics_off(self):
+        layer = self.make_layer(3)
+        dialog = self.create_dialog(layer)
+        dialog.btn_statistics.setChecked(False)
+        dialog.edit_cb.setChecked(True)
+        dialog.edit.setText("0")
+        dialog.run_search()
+        self.wait_for_results(dialog)
+        self.assertEqual(dialog.table.rowCount(), 1)
+        fid = dialog.row_fid(0)
+
+        dialog.table.item(0, 0).setText("no longer matches")
+        self.wait_for_edit_refresh(dialog)
+        self.assertEqual(layer.getFeature(fid)[0], "no longer matches")
+        self.assertEqual(dialog.result_ids, ())
+        self.assertEqual(dialog.table.rowCount(), 0)
+
+        dialog.change_undo_stack(False)
+        dialog.soft_refresh()
+        self.wait_for_results(dialog)
+        self.assertEqual(dialog.result_ids, (fid,))
+        self.assertEqual(dialog.table.item(0, 0).text(), "0")
+
+    def test_cell_edit_reorders_results_with_statistics_off(self):
+        layer = QgsVectorLayer("None?field=number:integer", "edit sorting", "memory")
+        for value in (1, 2, 3):
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes([value])
+            layer.dataProvider().addFeatures([feature])
+        dialog = self.create_dialog(layer)
+        dialog.btn_statistics.setChecked(False)
+        dialog.edit_cb.setChecked(True)
+        dialog.sort_header_column(0)
+        self.wait_for_results(dialog)
+        fid = dialog.row_fid(0)
+        layer.selectByIds([fid])
+
+        dialog.table.item(0, 0).setText("10")
+        self.wait_for_edit_refresh(dialog)
+        self.assertEqual([dialog.table.item(row, 0).text() for row in range(3)], ["2", "3", "10"])
+        self.assertEqual(dialog.row_fid(2), fid)
+        self.assertEqual(dialog.selected_fids(), [fid])
+
+        dialog.change_undo_stack(False)
+        dialog.soft_refresh()
+        self.wait_for_results(dialog)
+        self.assertEqual([dialog.table.item(row, 0).text() for row in range(3)], ["1", "2", "3"])
+
+    def test_value_map_editor_roundtrip_preserves_case_and_unmapped_values(self):
+        from qgis.core import QgsEditorWidgetSetup
+        from qgis.PyQt.QtWidgets import QStyleOptionViewItem
+
+        layer = self.make_layer(4)
+        stored = ("A", "a", "aA", "unmapped")
+        for feature, value in zip(layer.getFeatures(), stored):
+            layer.dataProvider().changeAttributeValues({feature.id(): {0: value}})
+        layer.setEditorWidgetSetup(0, QgsEditorWidgetSetup("ValueMap", {
+            "map": [{"Upper": "A"}, {"Lower": "a"}, {"Mixed": "aA"}]}))
+        dialog = self.create_dialog(layer)
+        dialog.edit_cb.setChecked(True)
+        delegate = dialog.column_delegates["name"]
+        for row, value in enumerate(stored):
+            with self.subTest(value=value):
+                index = dialog.table.model().index(row, 0)
+                fid = dialog.row_fid(row)
+                editor = delegate.createEditor(dialog.table, QStyleOptionViewItem(), index)
+                try:
+                    delegate.setEditorData(editor, index)
+                    self.assertEqual(editor.currentData(), value)
+                    delegate.setModelData(editor, dialog.table.model(), index)
+                    self.assertEqual(layer.getFeature(fid)[0], value)
+                finally:
+                    editor.deleteLater()
+
+        index = dialog.table.model().index(0, 0)
+        fid = dialog.row_fid(0)
+        editor = delegate.createEditor(dialog.table, QStyleOptionViewItem(), index)
+        try:
+            delegate.setEditorData(editor, index)
+            editor.setCurrentIndex(editor.findData("a"))
+            delegate.setModelData(editor, dialog.table.model(), index)
+        finally:
+            editor.deleteLater()
+        self.assertEqual(layer.getFeature(fid)[0], "a")
+        dialog.change_undo_stack(False)
+        self.assertEqual(layer.getFeature(fid)[0], "A")
+
+    def test_boolean_editor_normalizes_boolean_values_only(self):
+        from qgis.PyQt.QtGui import QStandardItemModel
+        from qgis.PyQt.QtWidgets import QStyleOptionViewItem, QWidget
+
+        parent = QWidget()
+        self.addCleanup(parent.deleteLater)
+        delegate = self.plugin.ColumnTextDelegate(parent)
+        delegate.field_kind = "boolean"
+        model = QStandardItemModel(1, 1, parent)
+        index = model.index(0, 0)
+        for value, expected in (("TRUE", "true"), ("False", "false"), (1, "true"),
+                                (0, "false"), (False, "false"), (None, None)):
+            with self.subTest(value=value):
+                model.setData(index, value, Qt.ItemDataRole.EditRole)
+                editor = delegate.createEditor(parent, QStyleOptionViewItem(), index)
+                try:
+                    delegate.setEditorData(editor, index)
+                    self.assertEqual(editor.currentData(), expected)
+                finally:
+                    editor.deleteLater()
+
     def test_statistics_cover_supplied_features(self):
         layer = QgsVectorLayer("None?field=number:integer", "statistics", "memory")
         for number in (1, 3, None):
@@ -769,6 +887,8 @@ class QgisIntegrationTests(unittest.TestCase):
         editor.field.setCurrentText("name")
         self.assertTrue(editor.apply_button.isEnabled())
         editor.input.clear()
+        self.assertEqual(editor.value, "")
+        editor.set_null.setChecked(True)
         self.assertIn("NULL", editor.preview.toPlainText())
         editor.reject()
         self.assertEqual(layer.getFeature(fid)["name"], "0")

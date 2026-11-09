@@ -1,4 +1,3 @@
-import csv
 import os
 import re
 import hashlib
@@ -7,10 +6,13 @@ import math
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
-from .filter_utils import checked_float, clipboard_text, spreadsheet_rows
+from .filter_utils import clipboard_text
+from .editing import convert_attribute, attribute_text, validate_change, validate_pending_changes
+from .numeric_statistics import NumericTotal
+from .exporting import export_csv_task
 from .filter_logic import FILTER_OPERATORS, field_filter
 from .filter_widgets import CheckableValueCombo, ValuePopup
-from .compact_filters import FilterHeader, ColumnTextDelegate, StatisticsStrip
+from .compact_filters import FilterHeader, ColumnTextDelegate, StatisticsStrip, NULL_ROLE
 from .pagination import PAGE_SIZES, normalize_page_size, page_window
 
 from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -27,12 +29,14 @@ from qgis.PyQt.QtGui import QAction, QPalette, QColor, QIcon, QFont, QFontDataba
 from qgis.PyQt.QtSvg import QSvgRenderer
 from qgis.core import (QgsProject, QgsMapLayer, QgsFeatureRequest,
                        QgsExpression, QgsApplication, QgsVectorDataProvider,
-                       QgsTask, QgsVectorLayerFeatureSource, QgsRectangle, QgsUnitTypes, QgsField, QgsFields, NULL)
+                       QgsTask, QgsVectorLayerFeatureSource, QgsRectangle, QgsSpatialIndex, QgsUnitTypes, QgsField, QgsFields, NULL)
 
 NO_FIELD = "(no filter)"
 ALL_VALUES = "(all)"
 MAX_VALUE_FEATURES = 2000
 MAX_STAT_DISTINCT = 25000
+MAX_RENDER_ROWS = 10000
+MAX_RENDER_CELLS = 250000
 STAT_HISTOGRAM_BINS = 16
 ICONS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "icons")
 
@@ -89,6 +93,8 @@ def collect_feature_ids(task, source, expression, sort_field=None, ascending=Tru
     request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
     if not sort_field:
         request.setNoAttributes()
+    else:
+        request.setSubsetOfAttributes([source.fields().indexFromName(sort_field)])
     if expression:
         request.setFilterExpression(expression)
     if sort_field:
@@ -120,7 +126,8 @@ def collect_nearby(task, source, selected_ids, distance):
     request = QgsFeatureRequest().setFilterFids(list(selected))
     request.setNoAttributes()
     features = source.getFeatures(request)
-    geometries = []
+    origins = {}
+    spatial_index = QgsSpatialIndex()
     bounds = None
     try:
         for feature in features:
@@ -131,7 +138,8 @@ def collect_nearby(task, source, selected_ids, distance):
             geometry = feature.geometry()
             if geometry.isEmpty():
                 continue
-            geometries.append(geometry)
+            origins[feature.id()] = geometry
+            spatial_index.addFeature(feature)
             rectangle = QgsRectangle(geometry.boundingBox())
             if distance is not None:
                 rectangle.grow(distance)
@@ -141,7 +149,7 @@ def collect_nearby(task, source, selected_ids, distance):
                 bounds.combineExtentWith(rectangle)
     finally:
         features.close()
-    if not geometries:
+    if not origins:
         raise ValueError("The selected features have no usable geometry.")
     request = QgsFeatureRequest().setFilterRect(bounds)
     request.setNoAttributes()
@@ -156,7 +164,13 @@ def collect_nearby(task, source, selected_ids, distance):
             geometry = feature.geometry()
             if geometry.isEmpty():
                 continue
-            for origin in geometries:
+            candidate_bounds = QgsRectangle(geometry.boundingBox())
+            if distance is not None:
+                candidate_bounds.grow(distance)
+            for origin_id in spatial_index.intersects(candidate_bounds):
+                if task.isCanceled():
+                    return None
+                origin = origins[origin_id]
                 if distance is None:
                     matched = origin.touches(geometry)
                 else:
@@ -183,6 +197,8 @@ def collect_column_statistics(task, source, columns, ids):
                          {"distinct": 0, "capped": False, "top": [], "histogram": [],
                           "numeric_count": 0, "nonfinite": 0}] for index, numeric in columns}
     frequencies = {index: {} for index, numeric in columns}
+    totals = {index: NumericTotal(field_kind(source.fields()[index]) == "integer")
+              for index, numeric in columns if numeric}
     if not ids or not columns:
         return {"summaries": summaries}
     request = QgsFeatureRequest().setFilterFids(list(ids))
@@ -213,7 +229,7 @@ def collect_column_statistics(task, source, columns, ids):
                         summary[6]["distinct"] = MAX_STAT_DISTINCT + 1
                 if numeric:
                     try:
-                        number = float(value)
+                        number = int(value) if totals[index].integer else float(value)
                     except (ValueError, TypeError, OverflowError):
                         summary[6]["nonfinite"] += 1
                         continue
@@ -221,7 +237,8 @@ def collect_column_statistics(task, source, columns, ids):
                         summary[6]["nonfinite"] += 1
                         continue
                     summary[6]["numeric_count"] += 1
-                    summary[2] += number
+                    totals[index].add(number)
+                    summary[2] = totals[index].total
                     summary[3] = number if summary[3] is None else min(summary[3], number)
                     summary[4] = number if summary[4] is None else max(summary[4], number)
     finally:
@@ -249,7 +266,7 @@ def collect_column_statistics(task, source, columns, ids):
                     if value is None or value == NULL:
                         continue
                     try:
-                        number = float(value)
+                        number = int(value) if totals[index].integer else float(value)
                     except (ValueError, TypeError, OverflowError):
                         continue
                     if not math.isfinite(number):
@@ -784,9 +801,12 @@ class BulkEditDialog(QDialog):
         self.field = QComboBox()
         self.field.addItems(field_names)
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Enter a value; leave blank for NULL")
+        self.input.setPlaceholderText("Enter a value; text spaces are preserved")
+        self.set_null = QCheckBox("Set NULL")
+        self.set_null.toggled.connect(lambda checked: self.input.setEnabled(not checked))
         form.addRow("Column", self.field)
         form.addRow("New value", self.input)
+        form.addRow(self.set_null)
         layout.addLayout(form)
         layout.addWidget(QLabel("Preview (first 10 rows)"))
         self.preview = QPlainTextEdit()
@@ -804,6 +824,7 @@ class BulkEditDialog(QDialog):
         layout.addWidget(buttons)
         self.field.currentIndexChanged.connect(self.update_preview)
         self.input.textChanged.connect(self.update_preview)
+        self.set_null.toggled.connect(self.update_preview)
         self.update_preview()
 
     def update_preview(self):
@@ -811,7 +832,7 @@ class BulkEditDialog(QDialog):
         try:
             if index < 0:
                 raise ValueError("The selected field is no longer available.")
-            value = FinderDialog.convert(self.layer.fields()[index], self.input.text())
+            value = FinderDialog.convert(self.layer.fields()[index], None if self.set_null.isChecked() else self.input.text())
             if len(self.features) != len(self.fids):
                 raise ValueError("Some selected features are no longer available.")
             self.value = value
@@ -853,6 +874,7 @@ class AutofillDialog(QDialog):
         self.mode.addItem("Same value", "same")
         self.mode.addItem("Number sequence", "sequence")
         self.mode.addItem("Repeat values", "repeat")
+        self.mode.addItem("Set NULL", "null")
         self.values = QPlainTextEdit()
         dark_palette(self.values, parent.theme)
         palette = self.values.palette()
@@ -883,10 +905,12 @@ class AutofillDialog(QDialog):
         self.values.setFixedHeight(72 if mode == "repeat" else 40)
         self.step.setVisible(mode == "sequence")
         self.step_label.setVisible(mode == "sequence")
-        self.hint.setText({"same": "Enter one value. Leave it empty to set NULL.",
+        self.values.setEnabled(mode != "null")
+        self.hint.setText({"null": "Set every target value to NULL.",
+                           "same": "Enter one value. Empty text and spaces are preserved.",
                            "sequence": "Enter the starting number and step; numeric fields only.",
                            "repeat": "Enter one value per line. Values repeat in order."}[mode])
-        self.values.setPlaceholderText({"same": "e.g. Residential", "sequence": "e.g. 1",
+        self.values.setPlaceholderText({"null": "", "same": "e.g. Residential", "sequence": "e.g. 1",
                                         "repeat": "e.g. Residential\nCommercial"}[mode])
 
 
@@ -916,6 +940,7 @@ class FinderDialog(QDialog):
         self.result_key = None
         self.result_ids = None
         self.query_task = None
+        self.csv_task = None
         self.query_version = 0
         self.page = 0
         self.pending_selection = set()
@@ -1110,7 +1135,7 @@ class FinderDialog(QDialog):
             self.page_size.addItem(str(size) if size else "All results", size)
         saved_size = normalize_page_size(QSettings().value("LayerFilter/pageSize", 500))
         self.page_size.setCurrentIndex(self.page_size.findData(saved_size))
-        self.page_size.setToolTip("All results turns pagination off and may take longer for large layers.")
+        self.page_size.setToolTip("All results disables paging for smaller result sets. Large results stay paginated; use Export CSV for the full result set.")
         pager.addWidget(self.page_size)
         pager.addStretch(1)
         self.page_status = QLabel("0 results")
@@ -1162,7 +1187,7 @@ class FinderDialog(QDialog):
                 (self.btn_undo, "Undo", "Undo the last edit"),
                 (self.btn_redo, "Redo", "Redo the last undone edit"),
                 (self.btn_copy, "Copy rows", "Copy selected rows, or the current page, for Excel"),
-                (self.btn_csv, "Export CSV", "Export selected rows, or the current page, to CSV")):
+                (self.btn_csv, "Export CSV", "Export selected rows, the current page, or all filtered results to CSV")):
             button.setText("Settings" if button is self.btn_settings else "")
             button.setAccessibleName(label)
             button.setToolTip(tooltip)
@@ -1218,7 +1243,9 @@ class FinderDialog(QDialog):
         self.btn_copy.clicked.connect(self.copy_rows)
         self.btn_csv.clicked.connect(self.export_csv)
         self.edit_cb.toggled.connect(self.on_edit_toggled)
-        self.table.itemChanged.connect(self.on_cell_edited)
+        self.table.model().dataChanged.connect(self.on_table_data_changed)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.cell_context_menu)
         self.btn_save.clicked.connect(self.save_edits)
         self.btn_discard.clicked.connect(self.discard_edits)
         self.btn_undo.clicked.connect(lambda: self.change_undo_stack(False))
@@ -1879,6 +1906,9 @@ class FinderDialog(QDialog):
 
     def shutdown(self):
         self.closing = True
+        if self.csv_task is not None:
+            self.csv_task.cancel()
+            self.csv_task = None
         self.layer_list_timer.stop()
         self.update_validity_watchers([])
         self.statistics_refresh_timer.stop()
@@ -2472,9 +2502,9 @@ class FinderDialog(QDialog):
             parts.append("$id IN ({})".format(",".join(str(int(fid)) for fid in self.selected_scope_ids)) if self.selected_scope_ids else "FALSE")
         text = self.edit.text().strip()
         if text and self.fields:
-            pattern = QgsExpression.quotedString("%" + text + "%")
+            pattern = QgsExpression.quotedString(text)
             parts.append("(" + " OR ".join(
-                "{} ILIKE {}".format(QgsExpression.quotedColumnRef(name), pattern)
+                "strpos(lower(to_string({})), lower({})) > 0".format(QgsExpression.quotedColumnRef(name), pattern)
                 for name in self.fields) + ")")
         return " AND ".join(part for part in parts if part)
 
@@ -2613,6 +2643,15 @@ class FinderDialog(QDialog):
         layer = self.current_layer()
         if layer is None or self.result_ids is None:
             return
+        render_notice = ""
+        limit = min(MAX_RENDER_ROWS, max(100, MAX_RENDER_CELLS // max(1, len(self.fields))))
+        if not self.page_size.currentData() and len(self.result_ids) > limit:
+            self.page_size.blockSignals(True)
+            self.page_size.setCurrentIndex(self.page_size.findData(500))
+            self.page_size.blockSignals(False)
+            QSettings().setValue("LayerFilter/pageSize", 500)
+            self.page = 0
+            render_notice = "All results exceeds the display limit; showing pages of 500. "
         window = page_window(len(self.result_ids), self.page, self.page_size.currentData())
         self.page = window.page
         page_ids = self.result_ids[window.start:window.stop]
@@ -2642,6 +2681,7 @@ class FinderDialog(QDialog):
                                                         and layer_fields[c].isReadOnly())}
 
             req = QgsFeatureRequest().setFilterFids(list(page_ids))
+            req.setFlags(QgsFeatureRequest.Flag.NoGeometry)
             features = {feature.id(): feature for feature in layer.getFeatures(req)} if page_ids else {}
 
             r = 0
@@ -2654,8 +2694,9 @@ class FinderDialog(QDialog):
                 self.table.setVerticalHeaderItem(r, QTableWidgetItem(str(window.start + r + 1)))
                 for c in range(len(self.fields)):
                     v = attrs[c] if c < len(attrs) else None
-                    s = "" if v is None or v == NULL else v.toString(Qt.DateFormat.ISODate) if isinstance(v, QDate) else str(v)
+                    s = attribute_text(v)
                     item = SortItem(s)
+                    item.setData(NULL_ROLE, v is None or v == NULL)
                     if c in changed_attributes.get(fid, {}):
                         item.setBackground(QColor("#365345" if self.theme == "dark" else "#d8efdf"))
                         item.setToolTip("Unsaved attribute change")
@@ -2688,7 +2729,7 @@ class FinderDialog(QDialog):
             if self.pending_notice and layer.isModified():
                 message = self.pending_notice
             self.pending_notice = None
-            self.status.setText(message)
+            self.status.setText(render_notice + message)
         except Exception as e:
             self.clear_table()
             self.status.setText("Filter problem: {}  (try Refresh lists or Clear filters)".format(e))
@@ -2705,26 +2746,7 @@ class FinderDialog(QDialog):
             self.statistics_strip.set_state("error", message=self.status.text())
 
     # ---------- editing ----------
-    @staticmethod
-    def convert(field, text):
-        t = text.strip()
-        if t == "":
-            return NULL
-        kind = field.type()
-        if kind in (QMetaType.Type.Int, QMetaType.Type.UInt, QMetaType.Type.LongLong, QMetaType.Type.ULongLong):
-            return int(t)
-        if kind == QMetaType.Type.Double:
-            return checked_float(t)
-        if kind == QMetaType.Type.Bool:
-            if t.lower() not in ("true", "false", "1", "0"):
-                raise ValueError("Enter true or false")
-            return t.lower() in ("true", "1")
-        if kind == QMetaType.Type.QDate:
-            date = QDate.fromString(t, Qt.DateFormat.ISODate)
-            if not date.isValid():
-                raise ValueError("Enter a date as YYYY-MM-DD")
-            return date
-        return text
+    convert = staticmethod(convert_attribute)
 
     def apply_edit_state(self, on):
         self.table.setProperty("editing", "true" if on else "false")
@@ -2805,12 +2827,21 @@ class FinderDialog(QDialog):
                         self.uncheck_edit(True)
                         return
                     if ans == QMessageBox.StandardButton.Save:
+                        try:
+                            validate_pending_changes(layer)
+                        except ValueError as exc:
+                            self.status.setText("Could not save: {}".format(exc))
+                            self.uncheck_edit(True)
+                            return
                         if not layer.commitChanges():
                             self.status.setText("Could not save: " + "; ".join(layer.commitErrors()))
                             self.uncheck_edit(True)
                             return
                     else:
-                        layer.rollBack()
+                        if not layer.rollBack():
+                            self.status.setText("Could not discard edits; pending changes were retained.")
+                            self.sync_edit_state()
+                            return
                 else:
                     if not layer.commitChanges():
                         self.status.setText("Could not stop editing: " + "; ".join(layer.commitErrors()))
@@ -2818,6 +2849,52 @@ class FinderDialog(QDialog):
                         return
             self.sync_edit_state()
             self.status.setText("Edit mode OFF")
+
+    def on_table_data_changed(self, first, last, roles):
+        if self.table.signalsBlocked() or (roles and not any(
+                role in roles for role in (Qt.ItemDataRole.EditRole, Qt.ItemDataRole.DisplayRole))):
+            return
+        for row in range(first.row(), last.row() + 1):
+            for column in range(first.column(), last.column() + 1):
+                item = self.table.item(row, column)
+                if item is not None:
+                    self.on_cell_edited(item)
+
+    def cell_context_menu(self, position):
+        item = self.table.itemAt(position)
+        if item is None or not self.edit_cb.isChecked() or not item.flags() & Qt.ItemFlag.ItemIsEditable:
+            return
+        menu = QMenu(self)
+        null_action = menu.addAction("Set cell to NULL")
+        empty_action = menu.addAction("Set cell to empty text")
+        layer = self.current_layer()
+        empty_action.setEnabled(bool(layer and field_kind(layer.fields()[item.column()]) == "text"))
+        layer_id = layer.id() if layer else None
+        fid = self.row_fid(item.row())
+        field_name = self.fields[item.column()]
+        action = menu.exec(self.table.viewport().mapToGlobal(position))
+        if action in (null_action, empty_action):
+            current = self.current_layer()
+            if current is None or current.id() != layer_id or field_name not in self.fields:
+                self.status.setText("The layer or field changed; the cell was not changed.")
+                return
+            row = next((row for row in range(self.table.rowCount()) if self.row_fid(row) == fid), None)
+            if row is None:
+                self.status.setText("The cell is no longer visible; it was not changed.")
+                return
+            self.set_cell_null(row, self.fields.index(field_name), action == null_action)
+
+    def set_cell_null(self, row, column, null=True):
+        item = self.table.item(row, column)
+        if item is None or not item.flags() & Qt.ItemFlag.ItemIsEditable or not self.edit_cb.isChecked():
+            return
+        self.table.blockSignals(True)
+        try:
+            item.setData(NULL_ROLE, null)
+            item.setText("")
+        finally:
+            self.table.blockSignals(False)
+        self.on_cell_edited(item)
 
     def on_cell_edited(self, item):
         if not self.edit_cb.isChecked():
@@ -2832,11 +2909,15 @@ class FinderDialog(QDialog):
         fld = layer.fields()[col]
         feat = layer.getFeature(fid)
         old = feat.attributes()[col] if feat.isValid() and col < len(feat.attributes()) else None
-        old_text = "" if old is None or old == NULL else old.toString(Qt.DateFormat.ISODate) if isinstance(old, QDate) else str(old)
+        old_text = attribute_text(old)
         ok, err = False, ""
         command_started = False
         try:
-            new = self.convert(fld, item.text())
+            if layer.readOnly() or layer.editFormConfig().readOnly(col) or (
+                    hasattr(fld, "isReadOnly") and fld.isReadOnly()):
+                raise ValueError("This field or layer is read-only")
+            new = self.convert(fld, None if item.data(NULL_ROLE) and not item.text() else item.text())
+            validate_change(layer, fid, col, new)
             self.own_edit = True
             layer.beginEditCommand("Change {}".format(fld.name()))
             command_started = True
@@ -2863,17 +2944,20 @@ class FinderDialog(QDialog):
             try:
                 item.setBackground(QBrush(QColor("#365345" if self.theme == "dark" else "#d8efdf")) if col in changed else QBrush())
                 item.setToolTip("Unsaved attribute change" if col in changed else "")
+                item.setData(NULL_ROLE, new is None or new == NULL)
             finally:
                 self.table.blockSignals(False)
             self.status.setText("Changed {} (not saved yet, click Save edits)".format(fld.name()))
             self.refresh_lists_only()
             self.resize_wrapped_rows()
-            if self.btn_statistics.isChecked():
-                self.invalidate_results()
-                self.timer.start()
+            # The edited value may change filter membership or sort order even
+            # when statistics are hidden. Rebuild after this signal returns.
+            self.invalidate_results()
+            self.timer.start()
         else:
             self.table.blockSignals(True)
             item.setText(old_text)
+            item.setData(NULL_ROLE, old is None or old == NULL)
             self.table.blockSignals(False)
             self.status.setText("Not changed: " + err)
 
@@ -2887,6 +2971,11 @@ class FinderDialog(QDialog):
             return
         if not layer.isModified():
             self.status.setText("Nothing to save")
+            return
+        try:
+            validate_pending_changes(layer)
+        except ValueError as exc:
+            self.status.setText("Could not save: {}".format(exc))
             return
         if layer.commitChanges(False):  # False = stay in edit mode
             self.soft_refresh()
@@ -2905,8 +2994,13 @@ class FinderDialog(QDialog):
                                    "Discard all unsaved edits on this layer?")
         if ans != QMessageBox.StandardButton.Yes:
             return
-        layer.rollBack()
-        layer.startEditing()  # stay in edit mode
+        if not layer.rollBack():
+            self.status.setText("Could not discard edits; pending changes were retained.")
+            return
+        if not layer.startEditing():
+            self.sync_edit_state()
+            self.status.setText("Edits discarded, but QGIS could not restart editing.")
+            return
         self.status.setText("Unsaved edits discarded.")
         self.soft_refresh()
 
@@ -3124,6 +3218,7 @@ class FinderDialog(QDialog):
         name = dialog.field.currentText()
         index = layer.fields().indexFromName(name)
         value = dialog.value
+        dialog.deleteLater()
         if (self.current_layer() != layer or not layer.isEditable() or set(self.selected_fids()) != set(fids)
                 or index < 0 or layer.editFormConfig().readOnly(index)
                 or (hasattr(layer.fields()[index], "isReadOnly") and layer.fields()[index].isReadOnly())):
@@ -3141,6 +3236,7 @@ class FinderDialog(QDialog):
             layer.beginEditCommand("QuickTable: bulk edit {}".format(name))
             command_open = True
             for fid in fids:
+                validate_change(layer, fid, index, value)
                 if not layer.changeAttributeValue(fid, index, value):
                     raise RuntimeError("The layer refused a change to feature {}".format(fid))
             layer.endEditCommand()
@@ -3157,6 +3253,8 @@ class FinderDialog(QDialog):
 
     @staticmethod
     def autofill_values(field, mode, text, step_text, count):
+        if mode == "null":
+            return [NULL] * count
         if mode == "same":
             return [FinderDialog.convert(field, text)] * count
         if mode == "repeat":
@@ -3256,6 +3354,7 @@ class FinderDialog(QDialog):
             layer.beginEditCommand("QuickTable: autofill {}".format(name))
             command_open = True
             for fid, value in zip(fids, values):
+                validate_change(layer, fid, index, value)
                 if not layer.changeAttributeValue(fid, index, value):
                     raise RuntimeError("The layer refused a change to feature {}".format(fid))
             layer.endEditCommand()
@@ -3456,17 +3555,50 @@ class FinderDialog(QDialog):
         self.status.setText("Copied {} row(s). Paste into Excel.".format(len(data) - 1))
 
     def export_csv(self):
+        layer = self.current_layer()
+        if layer is None or self.result_ids is None:
+            self.status.setText("Wait for matching results before exporting.")
+            return
+        if self.csv_task is not None:
+            self.status.setText("A CSV export is already running; cancel it in the QGIS task manager to retry.")
+            return
+        scopes = ["Current page", "All filtered results"]
+        selected = self.selected_fids()
+        if selected:
+            scopes.insert(0, "Selected rows on this page")
+        scope, accepted = QInputDialog.getItem(self, "Export CSV", "Rows to export", scopes, 0, False)
+        if not accepted:
+            return
+        ids = tuple(selected if scope == "Selected rows on this page" else
+                    self.result_ids if scope == "All filtered results" else self.all_fids())
+        columns = [c for c in range(len(self.fields)) if not self.table.isColumnHidden(c)]
+        names = [self.fields[c] for c in columns]
+        source = QgsVectorLayerFeatureSource(layer)
         path, _ = QFileDialog.getSaveFileName(self, "Export CSV", "features.csv", "CSV (*.csv)")
         if not path:
             return
-        data = self.table_rows()
+
+        def finished(exception, result=None):
+            if self.closing:
+                return
+            self.csv_task = None
+            if exception is not None:
+                self.status.setText("Could not export CSV: {}".format(exception))
+            elif result is None:
+                self.status.setText("CSV export canceled; the destination was not replaced.")
+            else:
+                self.status.setText("Exported {} row(s) to {}".format(result['rows'], result['path']))
+
         try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                csv.writer(f).writerows(spreadsheet_rows(data))
-        except (OSError, csv.Error) as e:
-            self.status.setText("Could not export CSV: {}".format(e))
-            return
-        self.status.setText("Exported {} row(s) to {}".format(len(data) - 1, path))
+            task = QgsTask.fromFunction("QuickTable: export CSV", export_csv_task,
+                source=source, ids=ids, columns=columns, names=names, path=path, on_finished=finished)
+            task.setDependentLayers([layer])
+            self.csv_task = task
+            self.status.setText("Exporting {} row(s)…".format(len(ids)))
+            QgsApplication.taskManager().addTask(task)
+        except Exception as exc:
+            self.csv_task = None
+            self.status.setText("Could not export CSV: {}".format(exc))
 
 
 class QuickFilter:

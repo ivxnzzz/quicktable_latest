@@ -51,9 +51,11 @@ choose the layer you want from QuickTable's layer list.
 
 ### Search, filter and sort
 
-Use **Search all attributes** to search across fields. Click the filter area
-beneath a column name to choose an operator and enter or select values. An
-equals filter can match any of several checked values; filters on different
+Use **Search all attributes** to search across fields. Search text is a literal,
+case-insensitive substring; `%` and `_` are ordinary characters in both global
+search and column Contains filters. Click the filter area beneath a column name
+to choose an operator and enter or select values. An equals filter can match
+any of several checked values; filters on different
 columns are combined. Suggestions are drawn from a limited number of features,
 so type a value if it is not listed. Use **Saved filters** to save, load or
 delete named filter sets, and **Clear filters** to reset the view.
@@ -70,8 +72,9 @@ wrapped columns; you can still drag column borders afterward.
 ### Results, selection and statistics
 
 Choose a page size at the bottom of the window. **All results** disables
-pagination and can take longer for large layers. **Select page** and **Zoom to
-page** operate on the current page; when using All results, they operate on all
+pagination for smaller result sets. Large or wide result sets automatically
+return to pages of 500. **Select page** and **Zoom to page** operate on the
+current page; when using All results, they operate on all
 displayed results.
 
 Selecting rows updates the QGIS layer selection. Turn on **Multi-select** to
@@ -83,6 +86,8 @@ is measured in layer CRS units; geographic layers use degrees.
 Turn on **Statistics** to inspect visible columns across all filtered results,
 not just the current page. Depending on field type, summaries include missing
 and distinct counts, numeric summaries and a histogram, or common values.
+Integer sums and extrema preserve their full precision. Floating-point
+summaries and averages are displayed rounded to 12 significant digits.
 
 ### Editing and fields
 
@@ -91,6 +96,13 @@ writable cell to change it. **Bulk edit** changes one field for selected rows
 after a preview. **Autofill** applies a single value, a repeating list or a
 numeric sequence to selected rows or the current page, with a preview before
 applying changes.
+
+Empty text and whitespace are preserved. NULL cells display italic **NULL**;
+right-click a writable cell to choose **Set cell to NULL** or **Set cell to empty
+text**. In Bulk edit, use **Set NULL**; in Autofill, choose the **Set NULL**
+pattern. Empty numeric or temporal input is rejected; use the explicit NULL
+option instead. Integer limits, text lengths, ISO date/time syntax and hard
+layer constraints are checked before changes are applied.
 
 Use **Fields > Add field** to configure each new field and add it to the fields
 list. Each field can have its own type, length and precision. Use **Fields >
@@ -103,11 +115,14 @@ layer, including edits made elsewhere in QGIS.
 
 ### Copy and export
 
-Copy or export the selected rows on the current page; if none are selected,
-QuickTable uses all rows displayed on that page. Only visible columns are
-included. To export all matching results, select **All results** as the page
-size first. Formula-like text is prefixed with an apostrophe for spreadsheet
-safety, so exported text may differ from the original attribute.
+Copy uses selected rows on the current page, or all displayed rows if none are
+selected. Export CSV asks you to choose selected rows, the current page, or all
+filtered results. Only visible columns are included. Full exports run in the
+background without rendering every row; cancel them in the QGIS task manager.
+A canceled or failed export preserves an existing destination file. NULL and
+empty text both become empty CSV cells. Formula-like text is prefixed with an
+apostrophe for spreadsheet safety, so exported text may differ from the
+original attribute.
 
 ## Development
 
@@ -145,7 +160,25 @@ python tools/package_plugin.py
 This creates `dist/quicktable_latest-2.00.zip` with only the runtime files,
 metadata, documentation, license and icons. Development files are excluded.
 
-The verified target is Windows with QGIS 3.44.13. Linux and macOS have not
+Validate the built ZIP in an isolated profile:
+
+```sh
+python tools/smoke_package.py
+```
+
+Run reproducible large-layer measurements with QGIS Python:
+
+```sh
+python tools/benchmark_plugin.py
+```
+
+The QGIS runner fails on unexpected skipped tests. Set
+`QUICKTABLE_TEST_POSTGIS_URI` to a disposable database connection string to run
+the real PostGIS test; it creates and removes a unique test schema. Set
+`QUICKTABLE_REQUIRE_POSTGIS=1` to make that test mandatory. CI includes a
+disposable PostGIS service and requires all QGIS tests to execute.
+
+The automated checks were run on Windows with QGIS 3.44.12. Linux and macOS have not
 been verified.
 The code uses shared Qt5/Qt6 API forms, but Qt6 runtime compatibility has not
 been verified and QGIS 4 remains excluded by the plugin metadata.

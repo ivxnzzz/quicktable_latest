@@ -9,6 +9,14 @@ def quote(text):
 
 
 class FieldFilterTests(unittest.TestCase):
+    def test_temporal_inputs_reject_invalid_dates_and_reversed_bounds(self):
+        for kind, value in (("date", "2026-02-30"), ("time", "25:00:00"),
+                            ("datetime", "not a datetime")):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                self.build("Equals", value, kind=kind)
+        with self.assertRaisesRegex(ValueError, "range start"):
+            self.build("Between", "2026-11-10", "2026-11-09", kind="date")
+
     def build(self, operator, text="", upper="", kind="text"):
         return field_filter('"value"', operator, text, upper, kind, quote)
 

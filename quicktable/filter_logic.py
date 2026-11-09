@@ -2,6 +2,7 @@
 
 import math
 import re
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 
 
@@ -29,6 +30,10 @@ def comparison_value(text, kind, quote):
         return "TRUE" if value in ("true", "1") else "FALSE"
     literal = quote(text)
     if kind in ("date", "datetime", "time"):
+        try:
+            {"date": date, "datetime": datetime, "time": time}[kind].fromisoformat(text.strip())
+        except ValueError:
+            raise ValueError("Enter a valid ISO {}".format(kind))
         return "to_{}({})".format(kind, literal)
     return literal
 
@@ -60,6 +65,14 @@ def field_filter(column, operator, text, upper, kind, quote, values=()):
         else:
             low = comparison_value(text, kind, quote)
             high = comparison_value(upper, kind, quote)
+            if kind in ("date", "datetime", "time"):
+                parser = {"date": date, "datetime": datetime, "time": time}[kind].fromisoformat
+                try:
+                    reversed_bounds = parser(text.strip()) > parser(upper.strip())
+                except TypeError:
+                    raise ValueError("Use matching time zones for both range bounds")
+                if reversed_bounds:
+                    raise ValueError("The range start must not exceed its end")
         return "({0} >= {1} AND {0} <= {2})".format(column, low, high)
     literal = comparison_value(text, kind, quote)
     symbol = {"Equals": "=", "Greater than": ">", "Less than": "<"}[operator]

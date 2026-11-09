@@ -3,9 +3,13 @@
 import math
 from decimal import Decimal, InvalidOperation
 
+from .numeric_statistics import format_stat
+
 from qgis.PyQt.QtCore import Qt, QRect, QSize, QDate, QPoint, QEvent, pyqtSignal
 from qgis.PyQt.QtGui import QColor, QPainter, QPainterPath, QPen, QTextDocument, QTextOption
-from qgis.PyQt.QtWidgets import QHeaderView, QStyledItemDelegate, QStyleOptionViewItem, QComboBox, QDateEdit, QWidget, QToolTip
+from qgis.PyQt.QtWidgets import QHeaderView, QStyledItemDelegate, QStyleOptionViewItem, QComboBox, QDateEdit, QLineEdit, QWidget, QToolTip
+
+NULL_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
 class StatisticsStrip(QWidget):
@@ -63,10 +67,10 @@ class StatisticsStrip(QWidget):
         lines.append("Distinct: {}".format(distinct))
         if numeric:
             numeric_count = info.get("numeric_count", count)
-            lines.extend(["Sum: {}".format(format(total, ".12g") if numeric_count else "—"),
-                          "Avg: {}".format(format(total / numeric_count, ".12g") if numeric_count else "—"),
-                          "Min: {}".format(format(minimum, ".12g") if numeric_count else "—"),
-                          "Max: {}".format(format(maximum, ".12g") if numeric_count else "—")])
+            lines.extend(["Sum: {}".format(format_stat(total) if numeric_count else "—"),
+                          "Avg: {}".format(format(Decimal(total) / numeric_count, ".12g") if numeric_count else "—"),
+                          "Min: {}".format(format_stat(minimum) if numeric_count else "—"),
+                          "Max: {}".format(format_stat(maximum) if numeric_count else "—")])
             if info.get("nonfinite"):
                 lines.append("Non-finite values excluded: {}".format(info["nonfinite"]))
         for value, frequency in info.get("top", []):
@@ -141,7 +145,7 @@ class StatisticsStrip(QWidget):
                 if height:
                     painter.drawRect(left, y + chart_height - height, max(1, right - left - 1), height)
             self.draw_line(painter, QRect(inner.left(), y + chart_height + 2, inner.width(), line_height),
-                           "Min {}  Max {}".format(format(minimum, ".8g"), format(maximum, ".8g")))
+                           "Min {}  Max {}".format(format_stat(minimum, 8), format_stat(maximum, 8)))
         elif not numeric and info.get("top"):
             for i, (value, frequency) in enumerate(info["top"]):
                 percent = self.percent(frequency, all_count)
@@ -223,13 +227,13 @@ class ColumnTextDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         if self.value_map:
             editor = QComboBox(parent)
-            editor.addItem("(NULL)", "")
+            editor.addItem("(NULL)", None)
             for label, value in self.value_map:
                 editor.addItem(label, str(value))
             return editor
         if self.field_kind == "boolean":
             editor = QComboBox(parent)
-            editor.addItem("(NULL)", "")
+            editor.addItem("(NULL)", None)
             editor.addItem("True", "true")
             editor.addItem("False", "false")
             return editor
@@ -242,12 +246,15 @@ class ColumnTextDelegate(QStyledItemDelegate):
 
     def setEditorData(self, editor, index):
         if isinstance(editor, QComboBox):
-            value = str(index.data(Qt.ItemDataRole.EditRole) or "").lower()
+            original = index.data(Qt.ItemDataRole.EditRole)
+            value = None if index.data(NULL_ROLE) or original is None else str(original)
             if self.field_kind == "boolean" and not self.value_map:
+                value = value.lower() if value is not None else None
                 value = {"1": "true", "0": "false"}.get(value, value)
-            match = next((i for i in range(editor.count()) if str(editor.itemData(i)).lower() == value), -1)
+            match = next((i for i in range(editor.count())
+                          if (None if editor.itemData(i) is None else str(editor.itemData(i))) == value), -1)
             if match < 0:
-                editor.addItem(str(index.data(Qt.ItemDataRole.EditRole)), str(index.data(Qt.ItemDataRole.EditRole)))
+                editor.addItem(str(original), str(original))
                 match = editor.count() - 1
             editor.setCurrentIndex(match)
         elif isinstance(editor, QDateEdit):
@@ -255,17 +262,33 @@ class ColumnTextDelegate(QStyledItemDelegate):
             editor.setDate(date if date.isValid() else QDate.currentDate())
         else:
             super().setEditorData(editor, index)
+            if isinstance(editor, QLineEdit):
+                editor.setProperty("initialNull", bool(index.data(NULL_ROLE)))
+                editor.textEdited.connect(lambda: editor.setProperty("initialNull", False))
 
     def setModelData(self, editor, model, index):
         if isinstance(editor, QComboBox):
-            model.setData(index, editor.currentData(), Qt.ItemDataRole.EditRole)
+            value = editor.currentData()
         elif isinstance(editor, QDateEdit):
-            model.setData(index, editor.date().toString(Qt.DateFormat.ISODate), Qt.ItemDataRole.EditRole)
+            value = editor.date().toString(Qt.DateFormat.ISODate)
+        elif isinstance(editor, QLineEdit):
+            value = None if editor.property("initialNull") and not editor.text() else editor.text()
         else:
             super().setModelData(editor, model, index)
+            return
+        previous_null = bool(index.data(NULL_ROLE))
+        previous_text = index.data(Qt.ItemDataRole.EditRole)
+        model.setData(index, value is None, NULL_ROLE)
+        text = "" if value is None else value
+        model.setData(index, text, Qt.ItemDataRole.EditRole)
+        if previous_text == text and previous_null != (value is None):
+            model.dataChanged.emit(index, index, [int(Qt.ItemDataRole.EditRole)])
 
     def initStyleOption(self, option, index):
         super().initStyleOption(option, index)
+        if index.data(NULL_ROLE):
+            option.text = "NULL"
+            option.font.setItalic(True)
         if self.wrapped:
             option.features |= QStyleOptionViewItem.ViewItemFeature.WrapText
             option.textElideMode = Qt.TextElideMode.ElideNone

@@ -1,0 +1,51 @@
+name: Verify QuickTable
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q quicktable tools tests
+  qgis:
+    runs-on: ubuntu-latest
+    container:
+      image: qgis/qgis:release-3_44
+      options: --user root
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: quicktable_test
+          POSTGRES_USER: quicktable_test
+          POSTGRES_PASSWORD: disposable_test_password
+        options: >-
+          --health-cmd "pg_isready -U quicktable_test -d quicktable_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QGIS_PREFIX_PATH: /usr
+      PYTHONPATH: /usr/share/qgis/python
+      QUICKTABLE_REQUIRE_POSTGIS: '1'
+      QUICKTABLE_TEST_POSTGIS_URI: "host=postgres port=5432 dbname=quicktable_test user=quicktable_test password=disposable_test_password"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run QGIS and real provider regressions (skips fail)
+        run: python3 tests/run_qgis_tests.py
+      - name: Build release package
+        run: python3 tools/package_plugin.py
+      - name: Load packaged plugin in an isolated profile
+        run: python3 tools/smoke_package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quicktable-verified-package
+          path: dist/*.zip
+          if-no-files-found: error
