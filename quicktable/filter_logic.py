@@ -10,26 +10,6 @@ FILTER_OPERATORS = ("Equals", "Contains", "Greater than", "Less than", "Between"
                     "Is empty", "Is not empty")
 
 
-def filter_tree_expression(tree, fields, quote_column, quote):
-    """Build a fully parenthesized expression from a validated condition tree."""
-    if not isinstance(tree, dict):
-        raise ValueError("Invalid filter condition")
-    if "children" in tree:
-        operator, children = tree.get("operator"), tree["children"]
-        if operator not in ("AND", "OR") or not isinstance(children, list) or not children:
-            raise ValueError("Choose AND or OR and add at least one condition")
-        return "(" + (" " + operator + " ").join(
-            filter_tree_expression(child, fields, quote_column, quote) for child in children) + ")"
-    name = tree.get("field")
-    if name not in fields:
-        raise ValueError("Filter field is no longer available")
-    result = field_filter(quote_column(name), tree.get("operator"), tree.get("value", ""),
-                          tree.get("upper", ""), fields[name], quote, tree.get("values", ()))
-    if result is None:
-        raise ValueError("Enter a filter value")
-    return result
-
-
 def comparison_value(text, kind, quote):
     if kind == "integer":
         if not re.fullmatch(r"[+-]?\d+", text.strip()):

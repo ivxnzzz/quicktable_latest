@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from .numeric_statistics import format_stat
 
 from qgis.PyQt.QtCore import Qt, QRect, QSize, QDate, QPoint, QEvent, pyqtSignal
-from qgis.PyQt.QtGui import QColor, QPainter, QPainterPath, QPen, QTextDocument, QTextOption
+from qgis.PyQt.QtGui import QColor, QPainter, QPainterPath, QPen, QTextDocument, QTextOption, QPalette
 from qgis.PyQt.QtWidgets import QHeaderView, QStyledItemDelegate, QStyleOptionViewItem, QComboBox, QDateEdit, QLineEdit, QWidget, QToolTip
 
 NULL_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -289,6 +289,10 @@ class ColumnTextDelegate(QStyledItemDelegate):
         if index.data(NULL_ROLE):
             option.text = "NULL"
             option.font.setItalic(True)
+            for role in (QPalette.ColorRole.Text, QPalette.ColorRole.HighlightedText):
+                color = option.palette.color(role)
+                color.setAlphaF(color.alphaF() * 0.6)
+                option.palette.setColor(role, color)
         if self.wrapped:
             option.features |= QStyleOptionViewItem.ViewItemFeature.WrapText
             option.textElideMode = Qt.TextElideMode.ElideNone

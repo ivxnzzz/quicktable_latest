@@ -24,20 +24,141 @@ except ImportError:
 
 @unittest.skipIf(QgsApplication is None, "Requires QGIS Python environment")
 class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
-    def test_data_quality_dialog_validates_field_check_and_range(self):
-        parent = self.create_dialog(self.make_layer(3))
-        dialog = self.plugin.DataQualityDialog(parent)
-        self.addCleanup(dialog.deleteLater)
-        with self.assertRaises(ValueError):
-            dialog.options()
-        dialog.fields.item(0).setCheckState(Qt.CheckState.Checked)
-        dialog.checks["range"].setChecked(True)
-        dialog.low.setText("5")
-        dialog.high.setText("1")
-        with self.assertRaises(ValueError):
-            dialog.options()
-        dialog.high.setText("10")
-        self.assertEqual(dialog.options(), ([0], {"range"}, (5.0, 10.0)))
+    def test_null_cells_have_lower_opacity_in_both_themes(self):
+        from qgis.core import NULL
+        from qgis.PyQt.QtGui import QPalette
+        from qgis.PyQt.QtWidgets import QStyleOptionViewItem
+        layer = self.make_layer(2)
+        features = list(layer.getFeatures())
+        layer.dataProvider().changeAttributeValues({features[0].id(): {0: NULL}})
+        dialog = self.create_dialog(layer)
+        for theme in ('light', 'dark'):
+            dialog.theme = theme
+            dialog.apply_theme()
+            delegate = dialog.table.itemDelegateForColumn(0)
+            options = []
+            for row in (0, 1):
+                option = QStyleOptionViewItem()
+                option.palette = dialog.table.palette()
+                delegate.initStyleOption(option, dialog.table.model().index(row, 0))
+                options.append(option)
+            self.assertEqual(options[0].text, 'NULL')
+            for role in (QPalette.ColorRole.Text, QPalette.ColorRole.HighlightedText):
+                self.assertLess(options[0].palette.color(role).alpha(), options[1].palette.color(role).alpha())
+
+    def test_find_replace_button_follows_layer_edit_mode(self):
+        layer = self.make_layer(2)
+        dialog = self.create_dialog(layer)
+        self.assertFalse(dialog.btn_replace.isEnabled())
+        dialog.edit_cb.setChecked(True)
+        self.assertTrue(layer.isEditable())
+        self.assertTrue(dialog.btn_replace.isEnabled())
+        self.assertTrue(layer.rollBack())
+        dialog.update_delete_button()
+        self.assertFalse(dialog.btn_replace.isEnabled())
+
+    def test_find_replace_automatically_previews_and_suggests_matching_values(self):
+        layer = self.make_layer(3)
+        self.assertTrue(layer.startEditing())
+        parent = self.create_dialog(layer)
+        editor = self.plugin.FindReplaceDialog(parent, layer, ['name'])
+        self.addCleanup(editor.reject)
+        editor.find.setText('1')
+        editor.replacement.setText('changed')
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            QgsApplication.processEvents()
+            if editor.apply_button.isEnabled() and editor.find.completer().model().rowCount():
+                break
+            time.sleep(0.01)
+        self.assertTrue(editor.apply_button.isEnabled(), editor.notice.text())
+        model = editor.find.completer().model()
+        self.assertIn('1', [model.index(i, 0).data() for i in range(model.rowCount())])
+        self.assertIn('changed', editor.preview.toPlainText())
+
+    def test_find_suggestions_respect_scope_columns_and_cancellation(self):
+        layer = QgsVectorLayer('None?field=first:string&field=second:string', 'suggestions', 'memory')
+        for values in [('alpha', 'not shown'), ('alpine', 'also alpha')]:
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes(list(values))
+            layer.dataProvider().addFeatures([feature])
+        features = list(layer.getFeatures())
+        source = QgsVectorLayerFeatureSource(layer)
+        task = SimpleNamespace(isCanceled=lambda: False)
+        suggestions = self.plugin.replace_suggestions(task, source, [features[0].id()], [0], 'alp')
+        self.assertEqual(suggestions, ['alpha'])
+        self.assertIsNone(self.plugin.replace_suggestions(SimpleNamespace(isCanceled=lambda: True),
+                                                           source, None, [0], 'alp'))
+
+    def test_replace_snapshot_searches_all_columns_and_entire_layer(self):
+        layer = QgsVectorLayer('None?field=first:string&field=second:string', 'replace', 'memory')
+        for values in [('cat', 'CAT'), ('no', 'cat')]:
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes(list(values))
+            layer.dataProvider().addFeatures([feature])
+        result = self.plugin.replace_columns_snapshot(SimpleNamespace(isCanceled=lambda: False),
+                    QgsVectorLayerFeatureSource(layer), None, [0, 1], 'cat', 'dog', False)
+        self.assertEqual(len(result[0]), 2)
+        self.assertEqual(sorted(len(v) for v in result[1].values()), [1, 2])
+        self.assertEqual(sorted(v for values in result[1].values() for v in values.values()),
+                         ['dog', 'dog', 'dog'])
+
+    def test_find_replace_dialog_has_all_columns_and_entire_layer(self):
+        layer = self.make_layer(2)
+        self.assertTrue(layer.startEditing())
+        parent = self.create_dialog(layer)
+        editor = self.plugin.FindReplaceDialog(parent, layer, ['name'])
+        self.addCleanup(editor.deleteLater)
+        self.assertIn('All writable text columns', [editor.field.itemText(i) for i in range(editor.field.count())])
+        self.assertIn('Entire layer', [editor.scope.itemText(i) for i in range(editor.scope.count())])
+        self.assertFalse(editor.apply_button.isEnabled())
+
+    def test_replace_all_columns_entire_layer_undoes_as_one_command(self):
+        layer = QgsVectorLayer('None?field=first:string&field=second:string', 'replace', 'memory')
+        for values in [('cat', 'CAT'), ('no', 'cat')]:
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes(list(values))
+            layer.dataProvider().addFeatures([feature])
+        self.assertTrue(layer.startEditing())
+        parent = self.create_dialog(layer)
+        editor = self.plugin.FindReplaceDialog(parent, layer, ['first', 'second'])
+        self.addCleanup(editor.deleteLater)
+        editor.scope.setCurrentIndex(editor.scope.findData('layer'))
+        editor.find.setText('cat')
+        editor.replacement.setText('dog')
+        editor.start_preview()
+        deadline = time.monotonic() + 10
+        while editor.task is not None and time.monotonic() < deadline:
+            QgsApplication.processEvents()
+            time.sleep(0.01)
+        self.assertTrue(editor.apply_button.isEnabled(), editor.notice.text())
+        editor.apply_preview()
+        self.assertEqual([(f['first'], f['second']) for f in layer.getFeatures()],
+                         [('dog', 'dog'), ('no', 'dog')])
+        layer.undoStack().undo()
+        self.assertEqual([(f['first'], f['second']) for f in layer.getFeatures()],
+                         [('cat', 'CAT'), ('no', 'cat')])
+
+    def test_find_replace_complete_flow_on_filtered_results_and_undo(self):
+        layer = self.make_layer(3)
+        self.assertTrue(layer.startEditing())
+        dialog = self.create_dialog(layer)
+        def interact(editor):
+            editor.find.setText('1')
+            editor.replacement.setText('changed')
+            editor.start_preview()
+            deadline = time.monotonic() + 10
+            while editor.task is not None and time.monotonic() < deadline:
+                QgsApplication.processEvents()
+                time.sleep(0.01)
+            self.assertTrue(editor.apply_button.isEnabled(), editor.notice.text())
+            editor.apply_preview()
+            return QDialog.DialogCode.Accepted
+        with patch.object(self.plugin.FindReplaceDialog, 'exec', interact):
+            dialog.find_replace()
+        self.assertEqual([f['name'] for f in layer.getFeatures()], ['0', 'changed', '2'])
+        layer.undoStack().undo()
+        self.assertEqual([f['name'] for f in layer.getFeatures()], ['0', '1', '2'])
 
     def test_find_replace_applies_one_undo_command_and_rejects_stale_values(self):
         layer = self.make_layer(3)
@@ -78,61 +199,28 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         self.assertEqual(result[1], {features[0].id(): "dog dog"})
         self.assertEqual(len(result[0]), 3)
 
-    def test_data_analysis_task_uses_all_feature_ids_and_handles_null(self):
-        from qgis.core import NULL
-        layer = self.make_layer(3)
-        features = list(layer.getFeatures())
-        layer.dataProvider().changeAttributeValues({features[0].id(): {0: NULL},
-                                                    features[1].id(): {0: NULL},
-                                                    features[2].id(): {0: ""}})
-        task = SimpleNamespace(isCanceled=lambda: False)
-        result = self.plugin.analyze_feature_snapshot(task, QgsVectorLayerFeatureSource(layer),
-                                                      [f.id() for f in features], [0],
-                                                      {"duplicates", "missing"}, None)
-        self.assertEqual(result["duplicates"]["ids"], {features[0].id(), features[1].id()})
-        self.assertEqual(len(result["missing"]["ids"]), 3)
-
-    def test_analysis_result_scope_can_be_applied_and_cleared(self):
-        dialog = self.create_dialog(self.make_layer(3))
-        matching = [dialog.result_ids[0]]
-        dialog.set_analysis_scope(matching)
-        self.wait_for_results(dialog)
-        self.assertEqual(list(dialog.result_ids), matching)
-        dialog.clear_filters()
-        self.wait_for_results(dialog)
-        self.assertEqual(len(dialog.result_ids), 3)
-
-    def test_advanced_filter_combines_with_search_and_clear_resets_it(self):
-        dialog = self.create_dialog(self.make_layer(3))
-        tree = {"operator": "OR", "children": [
-            {"field": "name", "operator": "Equals", "value": "0"},
-            {"field": "name", "operator": "Equals", "value": "1"}]}
-        dialog.set_advanced_filter(tree)
-        self.assertIn(' OR ', dialog.build_expr())
-        dialog.edit.setText("0")
-        expression = dialog.build_expr()
-        self.assertIn(' AND ', expression)
-        self.assertIn('strpos', expression)
-        dialog.clear_filters()
-        self.assertIsNone(dialog.advanced_filter)
-        self.assertFalse(dialog.build_expr())
-
-    def test_saved_view_restores_advanced_filter_sort_and_hidden_columns(self):
+    def test_saved_view_restores_sort_and_hidden_columns(self):
         layer = self.make_layer(3)
         layer.dataProvider().addAttributes([QgsField("other", QMetaType.Type.QString)])
         layer.updateFields()
         dialog = self.create_dialog(layer)
-        tree = {"operator": "OR", "children": [
-            {"field": "name", "operator": "Equals", "value": "0"}]}
-        saved = {"View": {"search": "", "filters": [], "advanced": tree,
+        saved = {"View": {"search": "", "filters": [],
                           "hidden_columns": ["name"], "sort_field": "name", "sort_descending": True}}
         QSettings().setValue(dialog.saved_filters_key(), __import__("json").dumps(saved))
         dialog.load_saved_filter("View")
         self.wait_for_results(dialog)
-        self.assertEqual(dialog.advanced_filter, tree)
         self.assertEqual(dialog.sort_field, "name")
         self.assertEqual(dialog.sort_order, Qt.SortOrder.DescendingOrder)
         self.assertTrue(dialog.table.isColumnHidden(dialog.fields.index("name")))
+
+    def test_saved_view_warns_if_removed_advanced_filter_was_present(self):
+        dialog = self.create_dialog(self.make_layer(3))
+        saved = {"View": {"search": "", "filters": [], "advanced": {
+            "operator": "OR", "children": [{"field": "name", "operator": "Equals", "value": "0"}]}}}
+        QSettings().setValue(dialog.saved_filters_key(), __import__("json").dumps(saved))
+        with patch.object(self.plugin.QMessageBox, "information") as warning:
+            dialog.load_saved_filter("View")
+        self.assertIn("advanced", warning.call_args.args[2].lower())
 
     @classmethod
     def setUpClass(cls):
