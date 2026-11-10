@@ -24,6 +24,52 @@ except ImportError:
 
 @unittest.skipIf(QgsApplication is None, "Requires QGIS Python environment")
 class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
+    def test_multi_column_replace_validates_final_combined_values(self):
+        from qgis.core import QgsFieldConstraints
+        layer = QgsVectorLayer('None?field=first:string&field=second:string', 'constraints', 'memory')
+        feature = QgsFeature(layer.fields())
+        feature.setAttributes(['cat', 'cat'])
+        layer.dataProvider().addFeatures([feature])
+        layer.setConstraintExpression(0, '"first" = "second"', 'Fields must match')
+        layer.setFieldConstraint(0, QgsFieldConstraints.Constraint.ConstraintExpression,
+                                 QgsFieldConstraints.ConstraintStrength.ConstraintStrengthHard)
+        self.assertTrue(layer.startEditing())
+        dialog = self.create_dialog(layer)
+        fid = next(layer.getFeatures()).id()
+        originals = {fid: {0: 'cat', 1: 'cat'}}
+        changes = {fid: {0: 'dog', 1: 'dog'}}
+        self.assertTrue(dialog.apply_multi_replacements(layer, ['first', 'second'], originals, changes))
+        self.assertEqual(layer.getFeature(fid).attributes(), ['dog', 'dog'])
+        layer.undoStack().undo()
+        self.assertEqual(layer.getFeature(fid).attributes(), ['cat', 'cat'])
+
+    def test_find_suggestions_match_replacement_unicode_semantics(self):
+        layer = QgsVectorLayer('None?field=first:string', 'suggestions', 'memory')
+        for value in ['Straße', 'STRASSE']:
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes([value])
+            layer.dataProvider().addFeatures([feature])
+        source = QgsVectorLayerFeatureSource(layer)
+        task = SimpleNamespace(isCanceled=lambda: False)
+        suggestions = self.plugin.replace_suggestions(task, source, None, [0], 'ss')
+        self.assertEqual(suggestions, ['STRASSE'])
+        sensitive = self.plugin.replace_suggestions(task, source, None, [0], 'SS', True)
+        self.assertEqual(sensitive, ['STRASSE'])
+        self.assertEqual(self.plugin.replace_suggestions(task, source, None, [0], 'ss', True), [])
+
+    def test_multi_column_replace_rolls_back_final_constraint_failure(self):
+        from qgis.core import QgsFieldConstraints
+        layer = self.make_layer(3)
+        layer.setFieldConstraint(0, QgsFieldConstraints.Constraint.ConstraintUnique,
+                                 QgsFieldConstraints.ConstraintStrength.ConstraintStrengthHard)
+        self.assertTrue(layer.startEditing())
+        dialog = self.create_dialog(layer)
+        originals = {f.id(): {0: f['name']} for f in layer.getFeatures()}
+        changes = {fid: {0: 'duplicate'} for fid in originals}
+        self.assertFalse(dialog.apply_multi_replacements(layer, ['name'], originals, changes))
+        self.assertEqual({f.id(): {0: f['name']} for f in layer.getFeatures()}, originals)
+        self.assertFalse(layer.undoStack().canUndo())
+
     def test_null_cells_have_lower_opacity_in_both_themes(self):
         from qgis.core import NULL
         from qgis.PyQt.QtGui import QPalette

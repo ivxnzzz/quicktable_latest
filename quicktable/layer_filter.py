@@ -292,8 +292,9 @@ def collect_column_statistics(task, source, columns, ids):
     return {"summaries": summaries}
 
 
-def replace_suggestions(task, source, ids, columns, needle):
+def replace_suggestions(task, source, ids, columns, needle, case_sensitive=False):
     matches = set()
+    pattern = re.compile(re.escape(needle), 0 if case_sensitive else re.IGNORECASE)
     checked = 0
     batches = (None,) if ids is None else (ids[start:start + 1000] for start in range(0, len(ids), 1000))
     for batch in batches:
@@ -311,7 +312,7 @@ def replace_suggestions(task, source, ids, columns, needle):
                     return None
                 for column in columns:
                     value = feature[column]
-                    if isinstance(value, str) and value and needle.casefold() in value.casefold():
+                    if isinstance(value, str) and value and pattern.search(value):
                         matches.add(value)
                 checked += 1
                 if checked >= MAX_VALUE_FEATURES or len(matches) >= 100:
@@ -1016,6 +1017,7 @@ class FindReplaceDialog(QDialog):
         self.find.textChanged.connect(self.schedule_suggestions)
         self.field.currentIndexChanged.connect(self.schedule_suggestions)
         self.scope.currentIndexChanged.connect(self.schedule_suggestions)
+        self.case.toggled.connect(self.schedule_suggestions)
 
     def schedule_preview(self, *args):
         self.invalidate_preview()
@@ -1026,6 +1028,8 @@ class FindReplaceDialog(QDialog):
             self.notice.setText("Enter text to find.")
 
     def schedule_suggestions(self, *args):
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseSensitive if self.case.isChecked()
+                                          else Qt.CaseSensitivity.CaseInsensitive)
         self.suggestion_timer.stop()
         if self.suggestion_task is not None:
             self.suggestion_task.cancel()
@@ -1063,7 +1067,8 @@ class FindReplaceDialog(QDialog):
                 self.completer.complete()
         task = QgsTask.fromFunction("QuickTable: find suggestions", replace_suggestions,
                                     source=QgsVectorLayerFeatureSource(self.layer), ids=ids,
-                                    columns=columns, needle=needle, on_finished=finished)
+                                    columns=columns, needle=needle, case_sensitive=self.case.isChecked(),
+                                    on_finished=finished)
         task.setDependentLayers([self.layer])
         self.suggestion_task = task
         QgsApplication.taskManager().addTask(task)
@@ -3628,9 +3633,13 @@ class FinderDialog(QDialog):
             for fid, values in changes.items():
                 for index, value in values.items():
                     converted = convert_attribute(layer.fields()[index], value)
-                    validate_change(layer, fid, index, converted)
                     if not layer.changeAttributeValue(fid, index, converted):
                         raise ValueError("The layer refused feature {}".format(fid))
+            # Validate complete records after every proposed change has been
+            # staged, so cross-field constraints see the final values.
+            for fid, values in changes.items():
+                index = next(iter(values))
+                validate_change(layer, fid, index, layer.getFeature(fid)[index])
             layer.endEditCommand()
             opened = False
         except Exception as exc:
