@@ -93,16 +93,16 @@ implemented. External verification is listed explicitly below.
 | Field validation | Integer bounds, text lengths, date/time parsing and hard layer constraints; failed bulk edits undo the entire command |
 | Failure recovery | Failed save/rollback retain pending edits and report failure; discard checks whether edit mode restarts |
 | Real providers | GeoPackage save/reopen/discard, schema add/delete and feature deletion/undo; Shapefile commit/reopen pass locally |
-| PostGIS | Live database test and mandatory CI service added; not run locally without a configured disposable database |
-| Automated release checks | QGIS runner rejects unexpected skips; workflow includes QGIS/PostGIS, compilation, package validation and isolated ZIP loading |
+| PostGIS | Live database test is optional and requires a configured disposable database; it is not run by the standard CI workflow |
+| Automated release checks | QGIS runner rejects unexpected skips; the standard workflow allows the unconfigured PostGIS test to skip and checks QGIS, disk providers, compilation, package validation and isolated ZIP loading |
 | Large layers | No geometry in page requests, bounded All-results display, batched cancellable CSV export, indexed nearby candidates; 10K/100K/1M measurements recorded |
 | Maintainability | Conversion/constraint checks, numeric accumulation and export isolated in focused modules |
 
 ## External verification and release steps
 
-1. Run the GitHub Actions workflow. Its QGIS job requires the live PostGIS
-   test and fails if that test is skipped. The workflow has not been run from
-   this local session.
+1. Run the GitHub Actions workflow. Its QGIS job runs disk-provider tests and
+   skips the PostGIS test when no connection is configured. A passing workflow
+   does not verify PostGIS.
 2. To run PostGIS locally, set `QUICKTABLE_TEST_POSTGIS_URI` to a disposable
    database connection string and `QUICKTABLE_REQUIRE_POSTGIS=1`. The test
    creates a UUID-named schema, uses only that schema, and drops it afterward.

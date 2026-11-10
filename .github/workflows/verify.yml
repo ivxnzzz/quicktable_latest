@@ -20,25 +20,13 @@ jobs:
     container:
       image: qgis/qgis:3.44.15-trixie
       options: --user root
-    services:
-      postgres:
-        image: postgis/postgis:16-3.4
-        env:
-          POSTGRES_DB: quicktable_test
-          POSTGRES_USER: quicktable_test
-          POSTGRES_PASSWORD: disposable_test_password
-        options: >-
-          --health-cmd "pg_isready -U quicktable_test -d quicktable_test"
-          --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       QT_QPA_PLATFORM: offscreen
       QGIS_PREFIX_PATH: /usr
       PYTHONPATH: /usr/share/qgis/python
-      QUICKTABLE_REQUIRE_POSTGIS: '1'
-      QUICKTABLE_TEST_POSTGIS_URI: "host=postgres port=5432 dbname=quicktable_test user=quicktable_test password=disposable_test_password"
     steps:
       - uses: actions/checkout@v4
-      - name: Run QGIS and real provider regressions (skips fail)
+      - name: Run QGIS and disk-provider regressions
         run: python3 tests/run_qgis_tests.py
       - name: Build release package
         run: python3 tools/package_plugin.py

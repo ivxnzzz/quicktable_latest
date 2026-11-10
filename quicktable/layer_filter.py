@@ -2076,10 +2076,11 @@ class FinderDialog(QDialog):
         key = self.column_settings_key()
         if not key:
             return
-        metrics = self.table.horizontalHeader().fontMetrics()
+        header = self.table.horizontalHeader()
+        metrics = header.fontMetrics()
         widths = self.saved_column_widths(key)
         for name in self.fields:
-            widths[name] = max(90, metrics.horizontalAdvance(name) + 36)
+            widths[name] = max(90, header.minimumSectionSize(), metrics.horizontalAdvance(name) + 36)
         self.pending_column_widths[key] = widths
         self.apply_column_layout()
         self.column_layout_timer.start()
@@ -3458,6 +3459,9 @@ class FinderDialog(QDialog):
                         QMetaType.Type.QDate: "date",
                         QMetaType.Type.Bool: "bool",
                     }[field_type]
+                    if type_name == "text":
+                        # PostgreSQL reports unbounded text with typmod -1.
+                        length = -1
                 if not layer.addAttribute(QgsField(field_name, field_type, type_name, len=length, prec=precision)):
                     raise RuntimeError("The data source rejected field '{}' or its type.".format(field_name))
             layer.updateFields()

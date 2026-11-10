@@ -1351,13 +1351,16 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         QgsApplication.processEvents()
         key = dialog.column_settings_key()
         self.addCleanup(QSettings().remove, key)
+        dialog.table.horizontalHeader().setMinimumSectionSize(130)
         dialog.table.setColumnWidth(0, 500)
         dialog.set_column_wrap("longer_field_name", True)
         dialog.table.setColumnWidth(1, 550)
         dialog.fit_column_widths_to_names()
-        expected = [max(90, dialog.table.horizontalHeader().fontMetrics().horizontalAdvance(name) + 36)
+        expected = [max(90, dialog.table.horizontalHeader().minimumSectionSize(),
+                        dialog.table.horizontalHeader().fontMetrics().horizontalAdvance(name) + 36)
                     for name in dialog.fields]
         self.assertEqual([dialog.table.columnWidth(i) for i in range(2)], expected)
+        self.assertEqual([dialog.saved_column_widths(key)[name] for name in dialog.fields], expected)
         self.assertIn("longer_field_name", dialog.wrapped_fields())
         dialog.save_column_widths()
         dialog.render_page()
@@ -1411,7 +1414,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
                 field = add.call_args.args[0]
                 self.assertEqual(field.typeName(), sql_type)
                 self.assertEqual(field.type(), kind)
-                self.assertEqual(field.length(), length)
+                self.assertEqual(field.length(), -1 if sql_type == "text" else length)
 
     def test_add_fields_dialog_rows_can_be_added_and_removed(self):
         finder = self.create_dialog(self.make_layer(1))
