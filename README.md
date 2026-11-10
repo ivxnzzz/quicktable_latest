@@ -4,7 +4,7 @@ Search, filter and edit vector-layer attributes in QGIS—even tables without ge
 
 **Development version 2.0.1** · QGIS 3.44+ (3.x) · By Iven Paul Rolloque
 
-![QuickTable interface with attribute filters and column statistics](https://raw.githubusercontent.com/ivxnzzz/quicktable_latest/main/docs/images/quicktable-interface.png)
+![QuickTable interface with attribute filters and column statistics](https://raw.githubusercontent.com/ivxnzzz/quicktable_qgis/main/docs/images/quicktable-interface.png)
 
 _Sample data: Philippine PSGC boundaries from [altcoder/philippines-psgc-shapefiles](https://github.com/altcoder/philippines-psgc-shapefiles)._
 
@@ -60,12 +60,12 @@ python tools/package_plugin.py
 python tools/smoke_package.py
 ```
 
-The build creates `dist/quicktable_latest-2.0.1.zip`. See the [remediation guide](https://github.com/ivxnzzz/quicktable_latest/blob/main/docs/remediation-guide.md) and [performance notes](https://github.com/ivxnzzz/quicktable_latest/blob/main/docs/performance.md) for validation details and limits.
+The build creates `dist/quicktable_latest-2.0.1.zip`. See the [remediation guide](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/remediation-guide.md) and [performance notes](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/performance.md) for validation details and limits.
 
 Automated checks have been run on **Windows with QGIS 3.44.12**. Linux and macOS remain unverified.
 
 ## 💬 Support & license
 
-Report bugs or request features through [GitHub Issues](https://github.com/ivxnzzz/quicktable_latest/issues). Include your QGIS version, OS and steps to reproduce.
+Report bugs or request features through [GitHub Issues](https://github.com/ivxnzzz/quicktable_qgis/issues). Include your QGIS version, OS and steps to reproduce.
 
 © 2026 Iven Paul Rolloque · [GNU GPL v2 or later](LICENSE) · Distributed without warranty.
