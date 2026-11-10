@@ -17,6 +17,7 @@ FILES = (
     "quicktable/compact_filters.py",
     "quicktable/filter_widgets.py",
     "quicktable/filter_utils.py",
+    "quicktable/data_analysis.py",
     "quicktable/editing.py",
     "quicktable/exporting.py",
     "quicktable/numeric_statistics.py",

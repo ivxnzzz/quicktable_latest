@@ -24,6 +24,116 @@ except ImportError:
 
 @unittest.skipIf(QgsApplication is None, "Requires QGIS Python environment")
 class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
+    def test_data_quality_dialog_validates_field_check_and_range(self):
+        parent = self.create_dialog(self.make_layer(3))
+        dialog = self.plugin.DataQualityDialog(parent)
+        self.addCleanup(dialog.deleteLater)
+        with self.assertRaises(ValueError):
+            dialog.options()
+        dialog.fields.item(0).setCheckState(Qt.CheckState.Checked)
+        dialog.checks["range"].setChecked(True)
+        dialog.low.setText("5")
+        dialog.high.setText("1")
+        with self.assertRaises(ValueError):
+            dialog.options()
+        dialog.high.setText("10")
+        self.assertEqual(dialog.options(), ([0], {"range"}, (5.0, 10.0)))
+
+    def test_find_replace_applies_one_undo_command_and_rejects_stale_values(self):
+        layer = self.make_layer(3)
+        self.assertTrue(layer.startEditing())
+        dialog = self.create_dialog(layer)
+        features = list(layer.getFeatures())
+        originals = {f.id(): f["name"] for f in features}
+        changes = {features[0].id(): "changed"}
+        self.assertTrue(dialog.apply_replacements(layer, "name", originals, changes))
+        self.assertEqual(layer.getFeature(features[0].id())["name"], "changed")
+        layer.undoStack().undo()
+        self.assertEqual(layer.getFeature(features[0].id())["name"], originals[features[0].id()])
+        layer.changeAttributeValue(features[1].id(), 0, "other")
+        self.assertFalse(dialog.apply_replacements(layer, "name", originals, changes))
+        self.assertEqual(layer.getFeature(features[0].id())["name"], originals[features[0].id()])
+
+    def test_find_replace_constraint_failure_rolls_back_all_changes(self):
+        from qgis.core import QgsFieldConstraints
+        layer = self.make_layer(3)
+        layer.setFieldConstraint(0, QgsFieldConstraints.Constraint.ConstraintUnique,
+                                 QgsFieldConstraints.ConstraintStrength.ConstraintStrengthHard)
+        self.assertTrue(layer.startEditing())
+        dialog = self.create_dialog(layer)
+        originals = {f.id(): f["name"] for f in layer.getFeatures()}
+        changes = {fid: "duplicate" for fid in originals}
+        self.assertFalse(dialog.apply_replacements(layer, "name", originals, changes))
+        self.assertEqual({f.id(): f["name"] for f in layer.getFeatures()}, originals)
+        self.assertFalse(layer.undoStack().canUndo())
+
+    def test_replace_snapshot_preserves_null_and_detects_all_changes(self):
+        from qgis.core import NULL
+        layer = self.make_layer(3)
+        features = list(layer.getFeatures())
+        layer.dataProvider().changeAttributeValues({features[0].id(): {0: "Cat cat"},
+                                                    features[1].id(): {0: NULL}})
+        result = self.plugin.replace_feature_snapshot(SimpleNamespace(isCanceled=lambda: False),
+                    QgsVectorLayerFeatureSource(layer), [f.id() for f in features], 0, "cat", "dog", False)
+        self.assertEqual(result[1], {features[0].id(): "dog dog"})
+        self.assertEqual(len(result[0]), 3)
+
+    def test_data_analysis_task_uses_all_feature_ids_and_handles_null(self):
+        from qgis.core import NULL
+        layer = self.make_layer(3)
+        features = list(layer.getFeatures())
+        layer.dataProvider().changeAttributeValues({features[0].id(): {0: NULL},
+                                                    features[1].id(): {0: NULL},
+                                                    features[2].id(): {0: ""}})
+        task = SimpleNamespace(isCanceled=lambda: False)
+        result = self.plugin.analyze_feature_snapshot(task, QgsVectorLayerFeatureSource(layer),
+                                                      [f.id() for f in features], [0],
+                                                      {"duplicates", "missing"}, None)
+        self.assertEqual(result["duplicates"]["ids"], {features[0].id(), features[1].id()})
+        self.assertEqual(len(result["missing"]["ids"]), 3)
+
+    def test_analysis_result_scope_can_be_applied_and_cleared(self):
+        dialog = self.create_dialog(self.make_layer(3))
+        matching = [dialog.result_ids[0]]
+        dialog.set_analysis_scope(matching)
+        self.wait_for_results(dialog)
+        self.assertEqual(list(dialog.result_ids), matching)
+        dialog.clear_filters()
+        self.wait_for_results(dialog)
+        self.assertEqual(len(dialog.result_ids), 3)
+
+    def test_advanced_filter_combines_with_search_and_clear_resets_it(self):
+        dialog = self.create_dialog(self.make_layer(3))
+        tree = {"operator": "OR", "children": [
+            {"field": "name", "operator": "Equals", "value": "0"},
+            {"field": "name", "operator": "Equals", "value": "1"}]}
+        dialog.set_advanced_filter(tree)
+        self.assertIn(' OR ', dialog.build_expr())
+        dialog.edit.setText("0")
+        expression = dialog.build_expr()
+        self.assertIn(' AND ', expression)
+        self.assertIn('strpos', expression)
+        dialog.clear_filters()
+        self.assertIsNone(dialog.advanced_filter)
+        self.assertFalse(dialog.build_expr())
+
+    def test_saved_view_restores_advanced_filter_sort_and_hidden_columns(self):
+        layer = self.make_layer(3)
+        layer.dataProvider().addAttributes([QgsField("other", QMetaType.Type.QString)])
+        layer.updateFields()
+        dialog = self.create_dialog(layer)
+        tree = {"operator": "OR", "children": [
+            {"field": "name", "operator": "Equals", "value": "0"}]}
+        saved = {"View": {"search": "", "filters": [], "advanced": tree,
+                          "hidden_columns": ["name"], "sort_field": "name", "sort_descending": True}}
+        QSettings().setValue(dialog.saved_filters_key(), __import__("json").dumps(saved))
+        dialog.load_saved_filter("View")
+        self.wait_for_results(dialog)
+        self.assertEqual(dialog.advanced_filter, tree)
+        self.assertEqual(dialog.sort_field, "name")
+        self.assertEqual(dialog.sort_order, Qt.SortOrder.DescendingOrder)
+        self.assertTrue(dialog.table.isColumnHidden(dialog.fields.index("name")))
+
     @classmethod
     def setUpClass(cls):
         cls.owns_app = QgsApplication.instance() is None

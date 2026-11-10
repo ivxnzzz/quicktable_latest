@@ -1,7 +1,7 @@
 import unittest
 import sqlite3
 
-from quicktable.filter_logic import comparison_value, field_filter
+from quicktable.filter_logic import comparison_value, field_filter, filter_tree_expression
 
 
 def quote(text):
@@ -9,6 +9,25 @@ def quote(text):
 
 
 class FieldFilterTests(unittest.TestCase):
+    def test_nested_filter_tree_respects_groups_and_field_types(self):
+        tree = {"operator": "AND", "children": [
+            {"field": "age", "operator": "Greater than", "value": "18"},
+            {"operator": "OR", "children": [
+                {"field": "name", "operator": "Equals", "value": "O'Brien"},
+                {"field": "name", "operator": "Is empty"}]}]}
+        expression = filter_tree_expression(tree, {"age": "integer", "name": "text"},
+                                            lambda name: '"' + name + '"', quote)
+        self.assertEqual(expression, '("age" > 18 AND ("name" = \'O\'\'Brien\' OR '
+                         '("name" IS NULL OR to_string("name") = \'\')))')
+
+    def test_filter_tree_rejects_empty_invalid_or_missing_conditions(self):
+        for tree in ({"operator": "OR", "children": []},
+                     {"operator": "XOR", "children": [{"field": "x"}]},
+                     {"field": "missing", "operator": "Equals", "value": "1"},
+                     {"field": "x", "operator": "Contains", "value": ""}):
+            with self.subTest(tree=tree), self.assertRaises(ValueError):
+                filter_tree_expression(tree, {"x": "text"}, lambda name: name, quote)
+
     def test_temporal_inputs_reject_invalid_dates_and_reversed_bounds(self):
         for kind, value in (("date", "2026-02-30"), ("time", "25:00:00"),
                             ("datetime", "not a datetime")):

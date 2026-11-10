@@ -16,3 +16,4 @@ htmlcov/
 # Locally installed agent skills
 /.agents/
 /skills-lock.json
+/docs/superpowers/

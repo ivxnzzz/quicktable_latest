@@ -8,10 +8,11 @@ from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
 from .filter_utils import clipboard_text
+from .data_analysis import analyze_records, replace_text
 from .editing import convert_attribute, attribute_text, validate_change, validate_pending_changes
 from .numeric_statistics import NumericTotal
 from .exporting import export_csv_task
-from .filter_logic import FILTER_OPERATORS, field_filter
+from .filter_logic import FILTER_OPERATORS, field_filter, filter_tree_expression
 from .filter_widgets import CheckableValueCombo, ValuePopup
 from .compact_filters import FilterHeader, ColumnTextDelegate, StatisticsStrip, NULL_ROLE
 from .pagination import PAGE_SIZES, normalize_page_size, page_window
@@ -23,7 +24,8 @@ from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                                  QCompleter, QCheckBox, QMessageBox, QFrame,
                                  QListWidget, QListWidgetItem, QDialogButtonBox,
                                  QFontComboBox, QSpinBox, QStyledItemDelegate, QStyle,
-                                 QMenu, QInputDialog, QPlainTextEdit, QFormLayout, QGroupBox)
+                                 QMenu, QInputDialog, QPlainTextEdit, QFormLayout, QGroupBox,
+                                 QTreeWidget, QTreeWidgetItem)
 from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint, QDate, QByteArray,
                               QItemSelection, QItemSelectionModel)
 from qgis.PyQt.QtGui import QAction, QPalette, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush, QPixmap, QPainter
@@ -289,6 +291,58 @@ def collect_column_statistics(task, source, columns, ids):
         finally:
             features.close()
     return {"summaries": summaries}
+
+
+def replace_feature_snapshot(task, source, ids, column, needle, replacement, case_sensitive):
+    if not needle:
+        raise ValueError("Enter text to find")
+    originals, changes = {}, {}
+    for start in range(0, len(ids), 1000):
+        if task.isCanceled():
+            return None
+        request = QgsFeatureRequest().setFilterFids(list(ids[start:start + 1000]))
+        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        request.setSubsetOfAttributes([column])
+        iterator = source.getFeatures(request)
+        try:
+            for feature in iterator:
+                if task.isCanceled():
+                    return None
+                old = feature[column]
+                originals[feature.id()] = old
+                if old is not None and old != NULL:
+                    new = replace_text(old, needle, replacement, case_sensitive)
+                    if new != old:
+                        changes[feature.id()] = new
+        finally:
+            iterator.close()
+    if len(originals) != len(ids):
+        raise ValueError("Some features are no longer available")
+    return originals, changes
+
+
+def analyze_feature_snapshot(task, source, ids, columns, checks, bounds):
+    """Analyze a snapshot in batches, closing each provider iterator promptly."""
+    def records():
+        for start in range(0, len(ids), 1000):
+            if task.isCanceled():
+                return
+            batch = list(ids[start:start + 1000])
+            request = QgsFeatureRequest().setFilterFids(batch)
+            request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+            request.setSubsetOfAttributes(columns)
+            iterator = source.getFeatures(request)
+            try:
+                for feature in iterator:
+                    if task.isCanceled():
+                        return
+                    values = tuple(None if feature[index] is None or feature[index] == NULL
+                                   else feature[index] for index in columns)
+                    yield feature.id(), values
+            finally:
+                iterator.close()
+    result = analyze_records(records(), checks, bounds, task.isCanceled)
+    return None if task.isCanceled() else result
 
 
 def collect_values(task, source, index, expression):
@@ -921,6 +975,166 @@ class AutofillDialog(QDialog):
                                         "repeat": "e.g. Residential\nCommercial"}[mode])
 
 
+class DataQualityDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Data quality")
+        self.setStyleSheet(parent.styleSheet())
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Choose fields and checks for all filtered records."))
+        self.fields = QListWidget()
+        for name in parent.fields:
+            item = QListWidgetItem(name, self.fields)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+        layout.addWidget(self.fields)
+        self.checks = {}
+        for name, label in (("duplicates", "Duplicate field combinations"),
+                            ("missing", "NULL or empty text"),
+                            ("whitespace", "Leading or trailing whitespace"),
+                            ("case", "Inconsistent capitalization"),
+                            ("range", "Outside numeric range")):
+            box = QCheckBox(label)
+            self.checks[name] = box
+            layout.addWidget(box)
+        bounds = QHBoxLayout()
+        self.low, self.high = QLineEdit(), QLineEdit()
+        self.low.setPlaceholderText("Minimum")
+        self.high.setPlaceholderText("Maximum")
+        bounds.addWidget(self.low)
+        bounds.addWidget(self.high)
+        layout.addLayout(bounds)
+        self.error = QLabel("")
+        layout.addWidget(self.error)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Analyze")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def options(self):
+        indices = [i for i in range(self.fields.count())
+                   if self.fields.item(i).checkState() == Qt.CheckState.Checked]
+        checks = {name for name, box in self.checks.items() if box.isChecked()}
+        if not indices or not checks:
+            raise ValueError("Choose at least one field and one check.")
+        bounds = None
+        if "range" in checks:
+            try:
+                bounds = (float(self.low.text()), float(self.high.text()))
+                if not all(math.isfinite(value) for value in bounds) or bounds[0] > bounds[1]:
+                    raise ValueError()
+            except ValueError:
+                raise ValueError("Enter a valid minimum and maximum.")
+        return indices, checks, bounds
+
+    def accept(self):
+        try:
+            self.options()
+        except ValueError as exc:
+            self.error.setText(str(exc))
+            return
+        super().accept()
+
+
+class AdvancedFilterDialog(QDialog):
+    """Edit nested condition groups without requiring expression syntax."""
+
+    def __init__(self, parent, tree):
+        super().__init__(parent)
+        self.setWindowTitle("Advanced filters")
+        self.setStyleSheet(parent.styleSheet())
+        self.resize(600, 400)
+        self.fields = list(parent.fields)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Select a group to add conditions or nested groups."))
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Condition"])
+        layout.addWidget(self.tree)
+        self.populate(None, tree or {"operator": "AND", "children": []})
+        self.tree.expandAll()
+        buttons = QHBoxLayout()
+        for text, callback in (("Add condition…", self.add_condition),
+                               ("Add AND group", lambda: self.add_group("AND")),
+                               ("Add OR group", lambda: self.add_group("OR")),
+                               ("Remove", self.remove_item)):
+            button = QPushButton(text)
+            button.clicked.connect(callback)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        self.error = QLabel("")
+        layout.addWidget(self.error)
+        actions = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        actions.accepted.connect(self.accept)
+        actions.rejected.connect(self.reject)
+        layout.addWidget(actions)
+
+    def populate(self, parent, node):
+        group = "children" in node
+        label = node["operator"] + " group" if group else "{} {} {}".format(
+            node["field"], node["operator"], node.get("value", ""))
+        item = QTreeWidgetItem([label])
+        item.setData(0, Qt.ItemDataRole.UserRole, {k: v for k, v in node.items() if k != "children"})
+        if parent is None:
+            self.tree.addTopLevelItem(item)
+            self.tree.setCurrentItem(item)
+        else:
+            parent.addChild(item)
+        for child in node.get("children", []):
+            self.populate(item, child)
+        return item
+
+    def selected_group(self):
+        item = self.tree.currentItem() or self.tree.topLevelItem(0)
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        return item if data.get("operator") in ("AND", "OR") else item.parent()
+
+    def add_group(self, operator):
+        item = self.populate(self.selected_group(), {"operator": operator, "children": []})
+        item.parent().setExpanded(True)
+        self.tree.setCurrentItem(item)
+
+    def add_condition(self):
+        field, ok = QInputDialog.getItem(self, "Add condition", "Field:", self.fields, 0, False)
+        if not ok or not field:
+            return
+        operator, ok = QInputDialog.getItem(self, "Add condition", "Operator:", list(FILTER_OPERATORS), 0, False)
+        if not ok:
+            return
+        value, upper = "", ""
+        if operator not in ("Is empty", "Is not empty"):
+            value, ok = QInputDialog.getText(self, "Add condition", "Value:")
+            if not ok:
+                return
+        if operator == "Between":
+            upper, ok = QInputDialog.getText(self, "Add condition", "Upper bound:")
+            if not ok:
+                return
+        parent = self.selected_group()
+        self.populate(parent, {"field": field, "operator": operator, "value": value, "upper": upper})
+        parent.setExpanded(True)
+
+    def remove_item(self):
+        item = self.tree.currentItem()
+        if item and item.parent():
+            item.parent().removeChild(item)
+
+    def value(self, item=None):
+        item = item or self.tree.topLevelItem(0)
+        node = dict(item.data(0, Qt.ItemDataRole.UserRole))
+        if node.get("operator") in ("AND", "OR"):
+            node["children"] = [self.value(item.child(i)) for i in range(item.childCount())]
+        return node
+
+    def accept(self):
+        try:
+            self.parent().advanced_filter_expression(self.value())
+        except ValueError as exc:
+            self.error.setText(str(exc))
+            return
+        super().accept()
+
+
 class FinderDialog(QDialog):
     def __init__(self, iface):
         super().__init__(None)  # no parent: the window gets its own taskbar button
@@ -941,6 +1155,8 @@ class FinderDialog(QDialog):
         self.layout_fields = []
         self.pending_column_widths = {}
         self.filter_rows = []
+        self.advanced_filter = None
+        self.analysis_scope_ids = None
         self.filters_ready = False
         self.pending_cascade_start = None
         self.table_layer_id = None
@@ -958,6 +1174,8 @@ class FinderDialog(QDialog):
         self.nearby_version = 0
         self.nearby_description = None
         self.statistics_task = None
+        self.analysis_task = None
+        self.replace_task = None
         self.statistics_version = 0
         self.statistics_key = None
         self.pending_notice = None
@@ -1057,6 +1275,10 @@ class FinderDialog(QDialog):
         self.btn_clear_filters = QPushButton("Clear filters")
         self.btn_clear_filters.setToolTip("Clear column filters, search, selected-only and nearby views; keep the map selection")
         row.addWidget(self.btn_clear_filters)
+        self.btn_advanced_filter = QPushButton("Advanced filters…")
+        row.addWidget(self.btn_advanced_filter)
+        self.btn_data_quality = QPushButton("Data quality…")
+        row.addWidget(self.btn_data_quality)
         row.addWidget(self.btn_saved_filters)
         row.addStretch(1)
         row.addWidget(self.btn_statistics)
@@ -1086,6 +1308,7 @@ class FinderDialog(QDialog):
         self.btn_unselect.setToolTip("Clear the table selection and the selected layer's map selection")
         self.btn_bulk = QPushButton("Bulk edit…")
         self.btn_autofill = QPushButton("Autofill…")
+        self.btn_replace = QPushButton("Find and replace…")
         self.btn_fields = QPushButton("Fields ▾")
         self.btn_fields.setObjectName("fieldsButton")
         self.fields_menu = QMenu(self.btn_fields)
@@ -1174,6 +1397,7 @@ class FinderDialog(QDialog):
         erow.addWidget(self.btn_redo)
         erow.addWidget(self.btn_bulk)
         erow.addWidget(self.btn_autofill)
+        erow.addWidget(self.btn_replace)
         erow.addWidget(self.btn_fields)
         erow.addWidget(self.btn_delete)
         erow.addStretch(1)
@@ -1238,6 +1462,7 @@ class FinderDialog(QDialog):
         self.btn_columns.clicked.connect(self.choose_columns)
         self.btn_bulk.clicked.connect(self.bulk_edit)
         self.btn_autofill.clicked.connect(self.autofill)
+        self.btn_replace.clicked.connect(self.find_replace)
         self.btn_add_field.triggered.connect(self.add_field)
         self.btn_delete_field.triggered.connect(self.delete_field)
         self.btn_fields.clicked.connect(lambda: self.fields_menu.popup(
@@ -1245,6 +1470,8 @@ class FinderDialog(QDialog):
         self.btn_nearby.clicked.connect(self.nearby_menu)
         self.selected_only_cb.toggled.connect(self.set_selected_scope)
         self.btn_saved_filters.clicked.connect(self.saved_filters_menu)
+        self.btn_advanced_filter.clicked.connect(self.show_advanced_filter)
+        self.btn_data_quality.clicked.connect(self.show_data_quality)
         self.btn_clear_filters.clicked.connect(self.clear_filters)
         self.multi_cb.toggled.connect(self.set_multi_selection)
         self.btn_copy.clicked.connect(self.copy_rows)
@@ -1913,6 +2140,12 @@ class FinderDialog(QDialog):
 
     def shutdown(self):
         self.closing = True
+        if self.replace_task is not None:
+            self.replace_task.cancel()
+            self.replace_task = None
+        if self.analysis_task is not None:
+            self.analysis_task.cancel()
+            self.analysis_task = None
         if self.csv_task is not None:
             self.csv_task.cancel()
             self.csv_task = None
@@ -2011,6 +2244,8 @@ class FinderDialog(QDialog):
         return layer if layer is not None and layer.type() == QgsMapLayer.LayerType.VectorLayer and layer.isValid() else None
 
     def on_layer_changed(self, *args):
+        self.advanced_filter = None
+        self.analysis_scope_ids = None
         self.selection_filter_timer.stop()
         self.cancel_nearby()
         self.nearby_scope_ids = None
@@ -2288,6 +2523,8 @@ class FinderDialog(QDialog):
         self.run_search()
 
     def clear_filters(self):
+        self.advanced_filter = None
+        self.analysis_scope_ids = None
         self.page = 0
         self.search_timer.stop()
         self.filter_timer.stop()
@@ -2454,7 +2691,10 @@ class FinderDialog(QDialog):
         if name in entries and QMessageBox.question(self, "Replace saved filters", "Replace '{}'?".format(name),
                                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
-        entries[name] = {"search": self.edit.text(), "filters": [
+        entries[name] = {"search": self.edit.text(), "advanced": self.advanced_filter,
+            "hidden_columns": [field for i, field in enumerate(self.fields) if self.table.isColumnHidden(i)],
+            "sort_field": self.sort_field, "sort_descending": self.sort_order == Qt.SortOrder.DescendingOrder,
+            "filters": [
             {"field": row.field.currentText(), "operator": row.operator.currentText(),
              "value": row.value.currentText(), "values": list(row.value.selected_values),
              "upper": row.upper.text()}
@@ -2473,6 +2713,31 @@ class FinderDialog(QDialog):
         saved = self.saved_filters().get(name)
         if not isinstance(saved, dict) or not isinstance(saved.get("filters"), list):
             return
+        missing = []
+        def valid_tree(node):
+            if not isinstance(node, dict):
+                return None
+            if "children" in node:
+                if node.get("operator") not in ("AND", "OR") or not isinstance(node["children"], list):
+                    return None
+                children = [child for child in (valid_tree(n) for n in node["children"]) if child]
+                return {"operator": node["operator"], "children": children} if children else None
+            if node.get("field") not in self.fields:
+                missing.append(str(node.get("field", "unknown")))
+                return None
+            return node
+        self.advanced_filter = valid_tree(saved.get("advanced"))
+        if "hidden_columns" in saved and isinstance(saved["hidden_columns"], list):
+            hidden = [field for field in saved["hidden_columns"] if field in self.fields]
+            missing.extend(str(field) for field in saved["hidden_columns"] if field not in self.fields)
+            QSettings().setValue(self.column_settings_key(), hidden)
+            self.apply_column_visibility()
+        if "sort_field" in saved:
+            sort_field = saved.get("sort_field")
+            if sort_field and sort_field not in self.fields:
+                missing.append(str(sort_field))
+            self.sort_field = sort_field if sort_field in self.fields else None
+            self.sort_order = Qt.SortOrder.DescendingOrder if saved.get("sort_descending") else Qt.SortOrder.AscendingOrder
         self.filter_timer.stop()
         self.filters_ready = False
         try:
@@ -2480,6 +2745,8 @@ class FinderDialog(QDialog):
             self.edit.setText(str(saved.get("search", "")))
             for spec in saved["filters"]:
                 if not isinstance(spec, dict) or spec.get("field") not in self.fields or spec.get("operator") not in FILTER_OPERATORS:
+                    if isinstance(spec, dict) and spec.get("field") not in self.fields:
+                        missing.append(str(spec.get("field", "unknown")))
                     continue
                 row = self.add_filter_row()
                 self.populate_filter_field(row, spec["field"])
@@ -2498,10 +2765,80 @@ class FinderDialog(QDialog):
         self.reload_value_lists()
         self.page = 0
         self.run_search()
+        if missing:
+            self.pending_notice = "Preset skipped missing fields: " + ", ".join(sorted(set(missing)))
 
     # ---------- filtering ----------
+    def show_data_quality(self):
+        layer = self.current_layer()
+        if layer is None or self.result_ids is None:
+            self.status.setText("Wait for filtered results before running data quality checks.")
+            return
+        dialog = DataQualityDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            dialog.deleteLater()
+            return
+        columns, checks, bounds = dialog.options()
+        dialog.deleteLater()
+        ids = self.result_ids
+        version = self.query_version
+        if self.analysis_task is not None:
+            self.analysis_task.cancel()
+        def finished(exception, result=None):
+            if (self.closing or self.analysis_task is not task or version != self.query_version
+                    or self.current_layer() != layer or self.result_ids is not ids):
+                return
+            self.analysis_task = None
+            if exception or result is None:
+                self.status.setText("Data quality failed: {}".format(exception) if exception else "Data quality canceled.")
+                return
+            labels = {"duplicates": "Duplicate combinations", "missing": "NULL or empty",
+                      "whitespace": "Whitespace", "case": "Case variants", "range": "Outside range"}
+            choices = ["{}: {} records ({} groups)".format(labels[name], len(data["ids"]), data["groups"])
+                       for name, data in result.items()]
+            selected, ok = QInputDialog.getItem(self, "Data quality results", "Choose results to show:", choices, 0, False)
+            if ok:
+                self.set_analysis_scope(result[list(result)[choices.index(selected)]]["ids"])
+        task = QgsTask.fromFunction("QuickTable: data quality", analyze_feature_snapshot,
+                                    source=QgsVectorLayerFeatureSource(layer), ids=ids,
+                                    columns=columns, checks=checks, bounds=bounds, on_finished=finished)
+        task.setDependentLayers([layer])
+        self.analysis_task = task
+        self.status.setText("Analyzing filtered records…")
+        QgsApplication.taskManager().addTask(task)
+
+    def set_analysis_scope(self, ids):
+        self.analysis_scope_ids = tuple(sorted(set(ids))) if ids is not None else None
+        self.page = 0
+        self.run_search()
+
+    def advanced_filter_expression(self, tree):
+        layer = self.current_layer()
+        fields = {field.name(): field_kind(field) for field in layer.fields()} if layer else {}
+        return filter_tree_expression(tree, fields, QgsExpression.quotedColumnRef, QgsExpression.quotedString)
+
+    def set_advanced_filter(self, tree):
+        if tree is not None:
+            self.advanced_filter_expression(tree)
+        self.advanced_filter = tree
+        self.page = 0
+        self.run_search()
+
+    def show_advanced_filter(self):
+        if not self.current_layer():
+            return
+        dialog = AdvancedFilterDialog(self, self.advanced_filter)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.set_advanced_filter(dialog.value())
+        dialog.deleteLater()
+
     def build_expr(self):
         parts = [self.part_expr(row.field, row.value) for row in self.filter_rows]
+        if getattr(self, "advanced_filter", None) is not None:
+            parts.append(self.advanced_filter_expression(self.advanced_filter))
+        analysis_ids = getattr(self, "analysis_scope_ids", None)
+        if analysis_ids is not None:
+            parts.append("$id IN ({})".format(",".join(str(int(fid)) for fid in analysis_ids)) if analysis_ids else "FALSE")
         nearby = getattr(self, "nearby_scope_ids", None)
         if nearby is not None:
             parts.append("$id IN ({})".format(",".join(str(int(fid)) for fid in nearby)) if nearby else "FALSE")
@@ -3257,6 +3594,116 @@ class FinderDialog(QDialog):
         self.soft_refresh()
         self.status.setText("Bulk edit failed: " + error if error else
                             "Changed {} feature(s); save to commit.".format(len(fids)))
+
+    def apply_replacements(self, layer, name, originals, changes):
+        index = layer.fields().indexFromName(name)
+        if (self.current_layer() != layer or not layer.isEditable() or layer.readOnly() or index < 0
+                or field_kind(layer.fields()[index]) != "text" or layer.editFormConfig().readOnly(index)
+                or (hasattr(layer.fields()[index], "isReadOnly") and layer.fields()[index].isReadOnly())):
+            self.status.setText("The layer or field changed. Replace canceled.")
+            return False
+        current = {feature.id(): feature[index] for feature in
+                   layer.getFeatures(QgsFeatureRequest().setFilterFids(list(originals)))}
+        if current != originals:
+            self.status.setText("Values changed after the preview. Replace canceled.")
+            return False
+        command_open = False
+        self.own_edit = True
+        try:
+            layer.beginEditCommand("QuickTable: find and replace {}".format(name))
+            command_open = True
+            for fid, value in changes.items():
+                converted = convert_attribute(layer.fields()[index], value)
+                validate_change(layer, fid, index, converted)
+                if not layer.changeAttributeValue(fid, index, converted):
+                    raise ValueError("The layer refused feature {}".format(fid))
+            layer.endEditCommand()
+            command_open = False
+        except Exception as exc:
+            if command_open:
+                layer.destroyEditCommand()
+            self.status.setText("Replace failed: {}".format(exc))
+            return False
+        finally:
+            self.own_edit = False
+        self.soft_refresh()
+        self.status.setText("Changed {} feature(s); save edits to commit.".format(len(changes)))
+        return True
+
+    def find_replace(self):
+        layer = self.current_layer()
+        if layer is None or not layer.isEditable() or self.result_ids is None:
+            self.status.setText("Enable edit mode and wait for filtered results before replacing.")
+            return
+        names = [field.name() for i, field in enumerate(layer.fields())
+                 if field.type() == QMetaType.Type.QString and not layer.editFormConfig().readOnly(i)
+                 and not (hasattr(field, "isReadOnly") and field.isReadOnly())]
+        if not names:
+            self.status.setText("No writable text fields are available.")
+            return
+        name, ok = QInputDialog.getItem(self, "Find and replace", "Text field:", names, 0, False)
+        if not ok:
+            return
+        needle, ok = QInputDialog.getText(self, "Find and replace", "Find literal text:")
+        if not ok:
+            return
+        if not needle:
+            self.status.setText("Enter text to find.")
+            return
+        replacement, ok = QInputDialog.getText(self, "Find and replace", "Replace with (empty clears matches):")
+        if not ok:
+            return
+        mode, ok = QInputDialog.getItem(self, "Find and replace", "Case matching:",
+                                        ["Case insensitive", "Case sensitive"], 0, False)
+        if not ok:
+            return
+        selected = tuple(self.selected_fids())
+        scopes = ["All filtered results"]
+        if selected:
+            scopes.insert(0, "Selected rows")
+        scope, ok = QInputDialog.getItem(self, "Find and replace", "Scope:", scopes, 0, False)
+        if not ok:
+            return
+        ids = tuple(selected if scope == "Selected rows" else self.result_ids)
+        result_ids = self.result_ids
+        version = self.query_version
+        index = layer.fields().indexFromName(name)
+        if self.replace_task is not None:
+            self.replace_task.cancel()
+        def finished(exception, result=None):
+            if (self.closing or self.replace_task is not task or self.current_layer() != layer
+                    or self.query_version != version or self.result_ids is not result_ids
+                    or (scope == "Selected rows" and set(self.selected_fids()) != set(selected))):
+                return
+            self.replace_task = None
+            if exception or result is None:
+                self.status.setText("Replace preview failed: {}".format(exception) if exception else "Replace preview canceled.")
+                return
+            originals, changes = result
+            if not changes:
+                self.status.setText("No matching values to replace.")
+                return
+            sample = list(changes.items())[:10]
+            preview = "\n".join("{}: {} → {}".format(fid, str(originals[fid])[:120], str(value)[:120])
+                                for fid, value in sample)
+            message = "Replace values in {} feature(s)?\n\n{}\n\nChanges can be undone before saving.".format(len(changes), preview)
+            if QMessageBox.question(self, "Confirm find and replace", message,
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                                    QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
+                return
+            if (self.current_layer() != layer or self.query_version != version or self.result_ids is not result_ids
+                    or (scope == "Selected rows" and set(self.selected_fids()) != set(selected))):
+                self.status.setText("Layer or scope changed. Replace canceled.")
+                return
+            self.apply_replacements(layer, name, originals, changes)
+        task = QgsTask.fromFunction("QuickTable: preview replacements", replace_feature_snapshot,
+                                    source=QgsVectorLayerFeatureSource(layer), ids=ids, column=index,
+                                    needle=needle, replacement=replacement, case_sensitive=mode == "Case sensitive",
+                                    on_finished=finished)
+        task.setDependentLayers([layer])
+        self.replace_task = task
+        self.status.setText("Preparing replacement preview…")
+        QgsApplication.taskManager().addTask(task)
 
     @staticmethod
     def autofill_values(field, mode, text, step_text, count):

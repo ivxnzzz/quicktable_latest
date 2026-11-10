@@ -13,6 +13,7 @@ _Sample data: Philippine PSGC boundaries from [altcoder/philippines-psgc-shapefi
 - **Find records:** Search all attributes, combine column filters, select multiple values and save filters.
 - **Organize tables:** Sort, hide, resize and wrap columns; customize numeric display and browse by page.
 - **Work with selections:** Sync rows with QGIS, show selected features and find nearby features.
+- **Explore and clean data:** Combine advanced AND/OR filters, save views, check duplicates and data quality, and preview find-and-replace edits.
 - **Edit attributes:** Update cells, bulk edit, autofill, manage fields and delete features with undo/redo.
 - **Inspect and export:** View statistics across filtered results, copy rows and export CSV in the background.
 - **Make it yours:** Choose light/dark themes, fonts, text size and window pinning.
@@ -46,6 +47,8 @@ Requires QGIS **3.44 or later in the 3.x series**. No extra Python packages are 
 - Search matches literal text; `%` and `_` are ordinary characters. Nearby distances use layer CRS units.
 - Large result sets stay paginated. Export all matches directly through **Export CSV**.
 - CSV uses visible columns and protects against spreadsheet formulas. NULL and empty text both export as blank cells.
+- Data quality checks use all filtered results; choose a result category to show matching records. **Clear filters** removes this result scope.
+- Find and replace changes writable text fields only. Preview the affected values before applying; changes remain undoable until saved.
 
 ## 🛠️ Development
 
