@@ -927,6 +927,18 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
             dialog.close()
             dialog.deleteLater()
 
+    def test_autofill_repeat_input_fits_two_lines_at_largest_font(self):
+        parent = self.create_dialog(self.make_layer(1))
+        parent.font_size = 24
+        parent.apply_theme()
+        dialog = self.plugin.AutofillDialog(parent, ["name"], 0, 1)
+        self.addCleanup(dialog.deleteLater)
+        dialog.mode.setCurrentIndex(dialog.mode.findData("repeat"))
+        dialog.show()
+        QgsApplication.processEvents()
+        self.assertGreaterEqual(dialog.values.viewport().height(),
+                                2 * dialog.values.fontMetrics().lineSpacing() + 8)
+
     def test_number_display_format_preserves_stored_values(self):
         layer = QgsVectorLayer("None?field=value:double", "numbers", "memory")
         feature = QgsFeature(layer.fields())

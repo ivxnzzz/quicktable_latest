@@ -12,3 +12,7 @@ htmlcov/
 
 # Built release packages and isolated release validation
 /dist/
+
+# Locally installed agent skills
+/.agents/
+/skills-lock.json

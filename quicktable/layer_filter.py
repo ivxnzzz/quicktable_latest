@@ -906,7 +906,10 @@ class AutofillDialog(QDialog):
 
     def update_mode(self):
         mode = self.mode.currentData()
-        self.values.setFixedHeight(72 if mode == "repeat" else 40)
+        self.values.ensurePolished()
+        lines = 2 if mode == "repeat" else 1
+        self.values.setFixedHeight(max(72 if mode == "repeat" else 40,
+                                       lines * self.values.fontMetrics().lineSpacing() + 20))
         self.step.setVisible(mode == "sequence")
         self.step_label.setVisible(mode == "sequence")
         self.values.setEnabled(mode != "null")
