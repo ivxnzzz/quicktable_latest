@@ -43,7 +43,7 @@ Requires QGIS **3.44 or later in the 3.x series**. No extra Python packages are 
 
 ### Features Preview
 
-With **Features Preview** enabled, select a feature in the table or in QGIS to open the sidebar. Selected features appear in green and nearby features in gray. The preview does not filter the table.
+With **Features Preview** enabled, select a feature in the table or QGIS to show it in green alongside nearby features in gray. When nothing is selected, the sidebar asks you to select a feature. The preview does not filter the table.
 
 - **Choose a range:** The default, **Touching**, shows features that touch the selection. To search farther, enter a distance, select metres, kilometres, centimetres, inches, feet, yards or miles, and click **Apply**. Distances are measured between feature geometries.
 - **Navigate:** Drag to pan and use the mouse wheel to zoom. The map centers on a new selection while retaining its zoom level. Click a displayed feature to select it and bring its row into view, including on another page. Active table filters still apply.

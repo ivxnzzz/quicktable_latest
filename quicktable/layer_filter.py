@@ -1105,6 +1105,33 @@ class PreviewLabel(QgsMapCanvasItem):
         painter.fillPath(self.text_path, QColor('#174d37' if self.selected else '#454c47'))
 
 
+class EmptyPreviewPanel(QFrame):
+    """Show a helpful prompt when the layer has no selection."""
+
+    def __init__(self, parent, layer):
+        super().__init__(parent)
+        self.layer = layer
+        self.setObjectName('featurePreview')
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 10)
+        layout.setSpacing(10)
+        title = QHBoxLayout()
+        heading = QLabel('Features Preview')
+        heading.setObjectName('previewTitle')
+        title.addWidget(heading, 1)
+        self.close_button = QPushButton('Close')
+        self.close_button.setToolTip('Hide Features Preview')
+        self.close_button.clicked.connect(parent.hide_nearby_preview)
+        title.addWidget(self.close_button)
+        layout.addLayout(title)
+        self.message = QLabel('Select a feature to see its nearby features.')
+        self.message.setObjectName('previewSecondary')
+        self.message.setWordWrap(True)
+        self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.message, 1)
+        self.setMinimumWidth(264)
+
+
 class NearbyPreviewPanel(QFrame):
     """Display copied nearby geometry without changing the source layer."""
 
@@ -1780,7 +1807,7 @@ class FinderDialog(QDialog):
         self.btn_nearby.setObjectName("statsToggle")
         self.btn_nearby.setCheckable(True)
         self.btn_nearby.setChecked(True)
-        self.btn_nearby.setToolTip("Show or hide the selected-feature map preview")
+        self.btn_nearby.setToolTip("Show or hide the layer and selected-feature preview")
         for widget in (self.btn_columns, self.btn_select, self.btn_unselect):
             tools.addWidget(widget)
         tools.addWidget(self.multi_cb)
@@ -2060,7 +2087,7 @@ class FinderDialog(QDialog):
     def apply_theme(self):
         self.setFont(QFont(self.font_family, self.font_size))
         self.setStyleSheet(build_css(self.theme, self.font_family, self.font_size))
-        if self.nearby_preview_dialog is not None:
+        if self.nearby_preview_dialog is not None and hasattr(self.nearby_preview_dialog, 'canvas'):
             self.nearby_preview_dialog.canvas.setCanvasColor(QColor(THEMES[self.theme]["surface"]))
             self.nearby_preview_dialog.canvas.refresh()
         for button, name in ((self.btn_settings, "settings"), (self.btn_refresh, "refresh"),
@@ -3022,13 +3049,18 @@ class FinderDialog(QDialog):
     def invalidate_nearby_after_layer_change(self):
         self.schedule_nearby_preview()
 
-    def cancel_nearby(self):
+    def cancel_nearby(self, keep_preview=False):
         self.nearby_version += 1
         self.nearby_update_timer.stop()
         if self.nearby_task is not None:
             self.nearby_task.cancel()
             self.nearby_task = None
-        self.close_nearby_preview()
+        if keep_preview:
+            if self.nearby_preview_task is not None:
+                self.nearby_preview_task.cancel()
+                self.nearby_preview_task = None
+        else:
+            self.close_nearby_preview()
         self.nearby_origin_ids = None
         self.nearby_match_ids = None
 
@@ -3039,7 +3071,8 @@ class FinderDialog(QDialog):
         if self.nearby_preview_dialog is not None:
             preview = self.nearby_preview_dialog
             self.nearby_preview_dialog = None
-            self.preview_extents[preview.layer.id()] = QgsRectangle(preview.canvas.extent())
+            if isinstance(preview, NearbyPreviewPanel):
+                self.preview_extents[preview.layer.id()] = QgsRectangle(preview.canvas.extent())
             self.preview_width = preview.width()
             preview.hide()
             preview.setParent(None)
@@ -3057,17 +3090,13 @@ class FinderDialog(QDialog):
                 if exception is not None:
                     self.status.setText("Nearby preview could not be displayed: {}".format(exception))
                 return
+            self.close_nearby_preview()
             current_selection = frozenset(selected_ids)
             recenter = self.preview_selection.get(layer.id()) != current_selection
             preview = NearbyPreviewPanel(self, layer, snapshot, len(nearby_ids),
                                          self.preview_extents.get(layer.id()), recenter)
             self.preview_selection[layer.id()] = current_selection
-            self.nearby_preview_dialog = preview
-            self.nearby_splitter.addWidget(preview)
-            self.nearby_splitter.setStretchFactor(1, 0)
-            preview.show()
-            width = self.nearby_splitter.width() - self.nearby_splitter.handleWidth()
-            self.nearby_splitter.setSizes([max(1, width - self.preview_width), self.preview_width])
+            self.display_preview_panel(preview)
         try:
             task = QgsTask.fromFunction("QuickTable: nearby preview", collect_nearby_preview,
                 source=QgsVectorLayerFeatureSource(layer), selected_ids=selected_ids,
@@ -3083,14 +3112,25 @@ class FinderDialog(QDialog):
         self.nearby_enabled = bool(enabled)
         self.schedule_nearby_preview()
 
+    def display_preview_panel(self, preview):
+        self.nearby_preview_dialog = preview
+        self.nearby_splitter.addWidget(preview)
+        self.nearby_splitter.setStretchFactor(1, 0)
+        preview.show()
+        width = self.nearby_splitter.width() - self.nearby_splitter.handleWidth()
+        self.nearby_splitter.setSizes([max(1, width - self.preview_width), self.preview_width])
+
     def hide_nearby_preview(self):
         self.btn_nearby.setChecked(False)
 
     def schedule_nearby_preview(self, *args):
-        self.cancel_nearby()
         layer = self.current_layer()
-        if (not self.closing and self.nearby_enabled and layer is not None
-                and layer.isSpatial() and layer.selectedFeatureIds()):
+        keep_preview = (not self.closing and self.nearby_enabled and layer is not None
+                        and bool(layer.selectedFeatureIds())
+                        and isinstance(self.nearby_preview_dialog, EmptyPreviewPanel)
+                        and self.nearby_preview_dialog.layer == layer)
+        self.cancel_nearby(keep_preview=keep_preview)
+        if (not self.closing and self.nearby_enabled and layer is not None and layer.isSpatial()):
             self.nearby_update_timer.start()
 
     def start_nearby_preview(self):
@@ -3099,6 +3139,7 @@ class FinderDialog(QDialog):
             return
         ids = tuple(layer.selectedFeatureIds())
         if not ids:
+            self.display_preview_panel(EmptyPreviewPanel(self, layer))
             return
         version = self.nearby_version
         distance, units = self.preview_distances.get(layer.id(), (0, Qgis.DistanceUnit.Meters))

@@ -756,7 +756,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             QgsApplication.processEvents()
-            if (dialog.nearby_preview_dialog is not None
+            if (isinstance(dialog.nearby_preview_dialog, self.plugin.NearbyPreviewPanel)
                     and set(dialog.nearby_origin_ids or ()) == set(selected)
                     and set(dialog.nearby_match_ids or ()) == set(touching)):
                 return dialog.nearby_preview_dialog
@@ -772,6 +772,42 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer.selectByIds([ids['second']])
         self.wait_for_lot_preview(dialog, [ids['second']], [ids['first']])
         self.assertEqual(set(dialog.result_ids), set(ids.values()))
+
+    def test_preview_prompts_without_selection_and_updates_after_selection(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        deadline = time.monotonic() + 10
+        while dialog.nearby_preview_dialog is None and time.monotonic() < deadline:
+            QgsApplication.processEvents()
+            time.sleep(0.01)
+        panel = dialog.nearby_preview_dialog
+        self.assertIsNotNone(panel)
+        self.assertIn('Select a feature', panel.message.text())
+        self.assertFalse(hasattr(panel, 'canvas'))
+        self.assertEqual(set(dialog.result_ids), set(ids.values()))
+        layer.selectByIds([ids['first']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        self.assertEqual(panel.canvas.layers(), [])
+        self.assertEqual(set(panel.snapshot['nearby']), {ids['second']})
+        layer.removeSelection()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            QgsApplication.processEvents()
+            panel = dialog.nearby_preview_dialog
+            if panel is not None and hasattr(panel, 'message') and 'Select a feature' in panel.message.text():
+                break
+            time.sleep(0.01)
+        self.assertIsNotNone(panel)
+        self.assertIn('Select a feature', panel.message.text())
+        dialog.btn_nearby.setChecked(False)
+        self.assertIsNone(dialog.nearby_preview_dialog)
+        dialog.btn_nearby.setChecked(True)
+        deadline = time.monotonic() + 10
+        while dialog.nearby_preview_dialog is None and time.monotonic() < deadline:
+            QgsApplication.processEvents()
+            time.sleep(0.01)
+        self.assertIn('Select a feature', dialog.nearby_preview_dialog.message.text())
 
     def test_preview_range_finds_nearby_features_in_selected_units(self):
         from qgis.core import Qgis
