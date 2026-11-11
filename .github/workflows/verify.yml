@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run QGIS and disk-provider regressions
-        run: python3 tests/run_qgis_tests.py
+        run: python3 tests/run_qgis_tests.py --skip-postgis
       - name: Build release package
         run: python3 tools/package_plugin.py
       - name: Load packaged plugin in an isolated profile

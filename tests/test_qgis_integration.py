@@ -25,6 +25,51 @@ except ImportError:
 
 @unittest.skipIf(QgsApplication is None, "Requires QGIS Python environment")
 class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
+    def test_date_editor_preserves_dates_before_qt_default_minimum(self):
+        from qgis.PyQt.QtWidgets import QStyleOptionViewItem
+
+        layer = QgsVectorLayer('None?field=day:date', 'historical dates', 'memory')
+        dates = [QDate(1, 1, 1), QDate(1600, 1, 1), QDate(1752, 9, 13),
+                 QDate(2026, 11, 12), QDate(9999, 12, 31)]
+        for date in dates:
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes([date])
+            layer.dataProvider().addFeatures([feature])
+        dialog = self.create_dialog(layer)
+        dialog.edit_cb.setChecked(True)
+        delegate = dialog.table.itemDelegateForColumn(0)
+        for row, date in enumerate(dates):
+            with self.subTest(date=date.toString(Qt.DateFormat.ISODate)):
+                fid = dialog.row_fid(row)
+                index = dialog.table.model().index(row, 0)
+                editor = delegate.createEditor(dialog.table, QStyleOptionViewItem(), index)
+                try:
+                    delegate.setEditorData(editor, index)
+                    delegate.setModelData(editor, dialog.table.model(), index)
+                    self.assertEqual(layer.getFeature(fid)[0], date)
+                finally:
+                    editor.deleteLater()
+
+    def test_removing_previewed_layer_cleans_up_without_deleted_object_access(self):
+        from qgis.PyQt import sip
+
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        errors = []
+        with patch.object(sys, 'excepthook', side_effect=lambda *args: errors.append(args)):
+            QgsProject.instance().removeMapLayer(layer.id())
+            QgsApplication.processEvents()
+        self.assertEqual(errors, [], [str(error[1]) for error in errors])
+        self.assertIsNone(dialog.nearby_preview_dialog)
+        if not sip.isdeleted(panel):
+            self.assertIsNone(panel.parent())
+            self.assertFalse(panel.isVisible())
+        self.assertIsNone(dialog.current_layer())
+        self.assertEqual(dialog.table.rowCount(), 0)
+
     def test_selected_lot_automatically_previews_touching_lots_without_filtering_table(self):
         layer = QgsVectorLayer('Polygon?crs=EPSG:3857&field=name:string', 'lots', 'memory')
         for name, x in (('origin', 0), ('touching', 1), ('far', 20)):
@@ -761,7 +806,29 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
                     and set(dialog.nearby_match_ids or ()) == set(touching)):
                 return dialog.nearby_preview_dialog
             time.sleep(0.01)
-        self.fail('Automatic lot preview did not update: ' + dialog.status.text())
+        def task_state(task):
+            if task is None:
+                return None
+            try:
+                return {'status': str(task.status()), 'canceled': task.isCanceled()}
+            except RuntimeError:
+                return 'deleted'
+
+        layer = dialog.current_layer()
+        details = {
+            'panel': type(dialog.nearby_preview_dialog).__name__,
+            'enabled': dialog.nearby_enabled,
+            'timer_active': dialog.nearby_update_timer.isActive(),
+            'version': dialog.nearby_version,
+            'nearby_task': task_state(dialog.nearby_task),
+            'snapshot_task': task_state(dialog.nearby_preview_task),
+            'origins': dialog.nearby_origin_ids,
+            'matches': dialog.nearby_match_ids,
+            'map_selection': layer.selectedFeatureIds() if layer else None,
+            'expected_origins': selected,
+            'expected_matches': touching,
+        }
+        self.fail('Automatic lot preview did not update: {} | {}'.format(dialog.status.text(), details))
 
     def test_lot_preview_follows_selection_and_preserves_table(self):
         layer, ids = self.make_preview_lots()

@@ -239,6 +239,7 @@ class ColumnTextDelegate(QStyledItemDelegate):
             return editor
         if self.field_kind == "date" and QDate.fromString(str(index.data(Qt.ItemDataRole.EditRole) or ""), Qt.DateFormat.ISODate).isValid():
             editor = QDateEdit(parent)
+            editor.setDateRange(QDate(1, 1, 1), QDate(9999, 12, 31))
             editor.setCalendarPopup(True)
             editor.setDisplayFormat("yyyy-MM-dd")
             return editor

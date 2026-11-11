@@ -1139,6 +1139,7 @@ class NearbyPreviewPanel(QFrame):
         super().__init__(parent)
         self.owner = parent
         self.layer = layer
+        self.layer_id = layer.id()
         self.snapshot = snapshot
         self.label_items = {}
         self.setObjectName('featurePreview')
@@ -3072,7 +3073,7 @@ class FinderDialog(QDialog):
             preview = self.nearby_preview_dialog
             self.nearby_preview_dialog = None
             if isinstance(preview, NearbyPreviewPanel):
-                self.preview_extents[preview.layer.id()] = QgsRectangle(preview.canvas.extent())
+                self.preview_extents[preview.layer_id] = QgsRectangle(preview.canvas.extent())
             self.preview_width = preview.width()
             preview.hide()
             preview.setParent(None)

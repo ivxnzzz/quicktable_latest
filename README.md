@@ -72,6 +72,11 @@ python tools/package_plugin.py
 python tools/smoke_package.py
 ```
 
+GitHub Actions runs `python3 tests/run_qgis_tests.py --skip-postgis` to exclude
+the live database test. Local runs keep it available: configure
+`QUICKTABLE_TEST_POSTGIS_URI` and set `QUICKTABLE_REQUIRE_POSTGIS=1` to require
+PostGIS verification against a disposable database.
+
 The build creates `dist/quicktable_latest-2.0.1.zip`. See the [remediation guide](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/remediation-guide.md) and [performance notes](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/performance.md) for validation details and limits.
 
 Automated checks have been run on **Windows with QGIS 3.44.12**. Linux and macOS remain unverified.
