@@ -23,15 +23,16 @@ from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                                  QAbstractItemView, QAbstractButton, QFileDialog, QApplication,
                                  QCompleter, QCheckBox, QMessageBox, QFrame,
                                  QListWidget, QListWidgetItem, QDialogButtonBox,
-                                 QFontComboBox, QSpinBox, QStyledItemDelegate, QStyle,
-                                 QMenu, QInputDialog, QPlainTextEdit, QFormLayout, QGroupBox)
-from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint, QDate, QByteArray, QStringListModel,
+                                 QFontComboBox, QSpinBox, QDoubleSpinBox, QStyledItemDelegate, QStyle,
+                                 QMenu, QInputDialog, QPlainTextEdit, QFormLayout, QGroupBox, QWidget, QSplitter)
+from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint, QRectF, QDate, QByteArray, QStringListModel,
                               QItemSelection, QItemSelectionModel)
-from qgis.PyQt.QtGui import QAction, QPalette, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush, QPixmap, QPainter
+from qgis.PyQt.QtGui import QAction, QPalette, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush, QPixmap, QPainter, QPainterPath, QPen
 from qgis.PyQt.QtSvg import QSvgRenderer
+from qgis.gui import QgsMapCanvas, QgsMapCanvasItem, QgsMapToolPan, QgsRubberBand
 from qgis.core import (QgsProject, QgsMapLayer, QgsFeatureRequest,
                        QgsExpression, QgsApplication, QgsVectorDataProvider,
-                       QgsTask, QgsVectorLayerFeatureSource, QgsRectangle, QgsSpatialIndex, QgsUnitTypes, QgsField, QgsFields, NULL)
+                       QgsTask, QgsVectorLayerFeatureSource, QgsRectangle, QgsSpatialIndex, QgsUnitTypes, QgsField, QgsFields, QgsGeometry, QgsFeature, QgsCoordinateReferenceSystem, QgsCoordinateTransform, Qgis, NULL)
 
 NO_FIELD = "(no filter)"
 ALL_VALUES = "(all)"
@@ -125,14 +126,15 @@ def collect_feature_ids_task(task, source, expression, sort_field=None, ascendin
     return (ids,) if ids is not None else None
 
 
-def collect_nearby(task, source, selected_ids, distance):
+def collect_nearby(task, source, selected_ids, distance, source_crs=None, transform_context=None):
     """Return IDs touching or within a planar distance of the selected features."""
     selected = set(selected_ids)
     request = QgsFeatureRequest().setFilterFids(list(selected))
     request.setNoAttributes()
     features = source.getFeatures(request)
     origins = {}
-    spatial_index = QgsSpatialIndex()
+    selected_features = []
+    geographic = distance is not None and source_crs is not None and source_crs.isGeographic()
     bounds = None
     try:
         for feature in features:
@@ -143,20 +145,44 @@ def collect_nearby(task, source, selected_ids, distance):
             geometry = feature.geometry()
             if geometry.isEmpty():
                 continue
-            origins[feature.id()] = geometry
-            spatial_index.addFeature(feature)
+            selected_features.append(QgsFeature(feature))
             rectangle = QgsRectangle(geometry.boundingBox())
-            if distance is not None:
-                rectangle.grow(distance)
             if bounds is None:
                 bounds = rectangle
             else:
                 bounds.combineExtentWith(rectangle)
     finally:
         features.close()
-    if not origins:
+    if not selected_features:
         raise ValueError("The selected features have no usable geometry.")
-    request = QgsFeatureRequest().setFilterRect(bounds)
+    transform = None
+    if geographic:
+        wgs84 = QgsCoordinateReferenceSystem('EPSG:4326')
+        center = QgsCoordinateTransform(source_crs, wgs84, transform_context).transform(bounds.center())
+        local_crs = QgsCoordinateReferenceSystem()
+        if not local_crs.createFromProj(
+                '+proj=aeqd +lat_0={} +lon_0={} +datum=WGS84 +units=m +no_defs'.format(center.y(), center.x())):
+            raise ValueError('Could not create a local measurement coordinate system.')
+        transform = QgsCoordinateTransform(source_crs, local_crs, transform_context)
+    spatial_index = QgsSpatialIndex()
+    bounds = None
+    for feature in selected_features:
+        geometry = feature.geometry()
+        if transform is not None:
+            geometry.transform(transform)
+            feature.setGeometry(geometry)
+        origins[feature.id()] = geometry
+        spatial_index.addFeature(feature)
+        rectangle = QgsRectangle(geometry.boundingBox())
+        if distance is not None:
+            rectangle.grow(distance)
+        if bounds is None:
+            bounds = rectangle
+        else:
+            bounds.combineExtentWith(rectangle)
+    request = QgsFeatureRequest()
+    if not geographic:
+        request.setFilterRect(bounds)
     request.setNoAttributes()
     features = source.getFeatures(request)
     matches = []
@@ -169,6 +195,8 @@ def collect_nearby(task, source, selected_ids, distance):
             geometry = feature.geometry()
             if geometry.isEmpty():
                 continue
+            if transform is not None:
+                geometry.transform(transform)
             candidate_bounds = QgsRectangle(geometry.boundingBox())
             if distance is not None:
                 candidate_bounds.grow(distance)
@@ -191,9 +219,41 @@ def collect_nearby(task, source, selected_ids, distance):
     return tuple(matches)
 
 
-def collect_nearby_task(task, source, selected_ids, distance):
-    ids = collect_nearby(task, source, selected_ids, distance)
+def collect_nearby_task(task, source, selected_ids, distance, source_crs=None, transform_context=None):
+    ids = collect_nearby(task, source, selected_ids, distance, source_crs, transform_context)
     return (ids,) if ids is not None else None
+
+
+def collect_nearby_preview(task, source, selected_ids, nearby_ids, selected_limit=100, nearby_limit=200):
+    """Copy a bounded sample of geometry as WKB for the preview canvas."""
+    result = {"selected": {}, "nearby": {}, "truncated": False}
+    remaining_bytes = 5_000_000
+    for name, ids, limit in (("selected", selected_ids, selected_limit), ("nearby", nearby_ids, nearby_limit)):
+        if task.isCanceled():
+            return None
+        if len(ids) > limit:
+            result["truncated"] = True
+        sample = list(ids[:limit])
+        if not sample:
+            continue
+        request = QgsFeatureRequest().setFilterFids(sample)
+        request.setNoAttributes()
+        iterator = source.getFeatures(request)
+        try:
+            for feature in iterator:
+                if task.isCanceled():
+                    return None
+                if not feature.hasGeometry() or feature.geometry().isEmpty():
+                    continue
+                wkb = bytes(feature.geometry().asWkb())
+                if len(wkb) > remaining_bytes:
+                    result["truncated"] = True
+                    continue
+                result[name][feature.id()] = wkb
+                remaining_bytes -= len(wkb)
+        finally:
+            iterator.close()
+    return result
 
 
 def collect_column_statistics(task, source, columns, ids):
@@ -410,7 +470,7 @@ def collect_values(task, source, index, expression):
 # signals of a vector layer that mean "the data or fields changed"
 LAYER_SIGNALS = ("dataChanged", "updatedFields", "editingStarted", "editingStopped",
                  "afterCommitChanges", "attributeValueChanged",
-                 "featureAdded", "featureDeleted", "readOnlyChanged",
+                 "featureAdded", "featureDeleted", "geometryChanged", "readOnlyChanged",
                  "supportsEditingChanged")
 
 
@@ -453,13 +513,19 @@ QFrame#toolSeparator { background: @border; border: none; }
 QFrame#fieldFilterPopup { background: @surface; border: 1px solid @border; border-radius: 5px; }
 QLabel#fieldlabel { color: @muted; background: transparent; }
 QLabel#status { color: @muted; background: transparent; }
+QFrame#featurePreview, QFrame#tableArea { background: @surface; border: 1px solid @border; border-radius: 6px; }
+QLabel#previewTitle { color: @text; font-weight: 700; background: transparent; }
+QLabel#previewSecondary { color: @muted; background: transparent; }
+QLabel#previewSelectedSwatch { background: @accent; border: none; border-radius: 4px; }
+QLabel#previewNearbySwatch { background: @border_hi; border: none; border-radius: 4px; }
+QFrame#previewMapFrame { background: @surface; border: 1px solid @border; border-radius: 2px; }
 
-QLineEdit, QComboBox, QSpinBox {
+QLineEdit, QComboBox, QAbstractSpinBox {
     background: @surface; border: 1px solid @border; border-radius: 4px;
     padding: 3px 8px; min-height: 18px; selection-background-color: @sel_input; selection-color: @text_hi;
 }
-QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: @border_hi; }
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border: 1px solid @accent; padding: 3px 8px; }
+QLineEdit:hover, QComboBox:hover, QAbstractSpinBox:hover { border-color: @border_hi; }
+QLineEdit:focus, QComboBox:focus, QAbstractSpinBox:focus { border: 1px solid @accent; padding: 3px 8px; }
 QPlainTextEdit {
     background: @surface; color: @text; border: 1px solid @border; border-radius: 4px;
     padding: 4px 8px; selection-background-color: @sel_input; selection-color: @text_hi;
@@ -468,20 +534,20 @@ QPlainTextEdit:hover { border-color: @border_hi; }
 QPlainTextEdit:focus { border: 1px solid @accent; }
 QComboBox::drop-down { border: none; width: 22px; subcontrol-origin: padding; subcontrol-position: center right; }
 QComboBox::down-arrow { image: url(@down_url); width: 10px; height: 10px; }
-QSpinBox, QSpinBox:focus { padding-right: 28px; }
-QSpinBox::up-button {
+QAbstractSpinBox, QAbstractSpinBox:focus { padding-right: 28px; }
+QAbstractSpinBox::up-button {
     subcontrol-origin: border; subcontrol-position: top right; width: 24px;
     border-left: 1px solid @border; border-bottom: 1px solid @border;
     border-top-right-radius: 4px; background: @alt;
 }
-QSpinBox::down-button {
+QAbstractSpinBox::down-button {
     subcontrol-origin: border; subcontrol-position: bottom right; width: 24px;
     border-left: 1px solid @border; border-bottom-right-radius: 4px; background: @alt;
 }
-QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: @hover_bg; }
-QSpinBox::up-button:pressed, QSpinBox::down-button:pressed { background: @sel_bg; }
-QSpinBox::up-arrow { image: url(@up_url); width: 10px; height: 10px; }
-QSpinBox::down-arrow { image: url(@down_url); width: 10px; height: 10px; }
+QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover { background: @hover_bg; }
+QAbstractSpinBox::up-button:pressed, QAbstractSpinBox::down-button:pressed { background: @sel_bg; }
+QAbstractSpinBox::up-arrow { image: url(@up_url); width: 10px; height: 10px; }
+QAbstractSpinBox::down-arrow { image: url(@down_url); width: 10px; height: 10px; }
 QAbstractItemView {
     background: @surface; color: @text; border: 1px solid @border; outline: 0;
     selection-background-color: @sel_bg; selection-color: @sel_fg;
@@ -949,6 +1015,293 @@ class BulkEditDialog(QDialog):
             self.apply_button.setEnabled(False)
 
 
+class PreviewPanSelectTool(QgsMapToolPan):
+    """Pan by dragging; select a displayed feature with a click."""
+
+    def __init__(self, canvas, layer, snapshot, on_selected):
+        super().__init__(canvas)
+        self.canvas = canvas
+        self.layer = layer
+        self.on_selected = on_selected
+        self.geometries = []
+        for group in ('selected', 'nearby'):
+            for fid, wkb in snapshot[group].items():
+                geometry = QgsGeometry()
+                geometry.fromWkb(wkb)
+                if not geometry.isEmpty():
+                    self.geometries.append((fid, geometry))
+        self.press_pos = None
+
+    def canvasPressEvent(self, event):
+        self.press_pos = event.pos() if event.button() == Qt.MouseButton.LeftButton else None
+        super().canvasPressEvent(event)
+
+    def canvasReleaseEvent(self, event):
+        click = (self.press_pos is not None and event.button() == Qt.MouseButton.LeftButton
+                 and (event.pos() - self.press_pos).manhattanLength() < QApplication.startDragDistance())
+        self.press_pos = None
+        super().canvasReleaseEvent(event)
+        if not click:
+            return
+        point = QgsGeometry.fromPointXY(event.mapPoint())
+        tolerance = self.canvas.mapUnitsPerPixel() * 5
+        matches = [(geometry.distance(point), fid) for fid, geometry in self.geometries]
+        matches = [(distance, fid) for distance, fid in matches if 0 <= distance <= tolerance]
+        if matches:
+            fid = min(matches)[1]
+            self.layer.selectByIds([fid])
+            self.on_selected(self.layer, fid)
+
+
+def preview_label_angle(geometry):
+    """Return the screen angle of the longest side of a feature's oriented bounds."""
+    box = geometry.orientedMinimumBoundingBox()[0]
+    vertices = list(box.vertices()) if not box.isEmpty() else list(geometry.vertices())
+    segments = [(b.x() - a.x(), b.y() - a.y()) for a, b in zip(vertices, vertices[1:])]
+    if not segments:
+        return 0.0
+    dx, dy = max(segments, key=lambda segment: segment[0] ** 2 + segment[1] ** 2)
+    if not (dx or dy):
+        return 0.0
+    angle = math.degrees(math.atan2(-dy, dx))
+    return (angle + 90) % 180 - 90
+
+
+class PreviewLabel(QgsMapCanvasItem):
+    """A map-anchored, readable label that follows pan and zoom."""
+
+    def __init__(self, canvas, point, text, selected=True, angle=0):
+        super().__init__(canvas)
+        self.point = point
+        self.text = text
+        self.selected = selected
+        self.font = QFont(QApplication.font())
+        self.font.setBold(True)
+        metrics = QFontMetrics(self.font)
+        display_text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, 208)
+        self.text_path = QPainterPath()
+        self.text_path.addText(3, metrics.ascent() + 3, self.font, display_text)
+        self.box = QRectF(0, 0, metrics.horizontalAdvance(display_text) + 6, metrics.height() + 6)
+        self.setTransformOriginPoint(self.box.center())
+        self.setRotation(angle)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setZValue(100)
+        self.updatePosition()
+
+    def boundingRect(self):
+        return self.box
+
+    def updatePosition(self):
+        pos = self.toCanvasCoordinates(self.point)
+        self.setPos(pos.x() - self.box.width() / 2, pos.y() - self.box.height() / 2)
+
+    def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor('white'), 3)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(self.text_path)
+        painter.fillPath(self.text_path, QColor('#174d37' if self.selected else '#454c47'))
+
+
+class NearbyPreviewPanel(QFrame):
+    """Display copied nearby geometry without changing the source layer."""
+
+    def __init__(self, parent, layer, snapshot, nearby_count, extent=None, recenter=True):
+        super().__init__(parent)
+        self.owner = parent
+        self.layer = layer
+        self.snapshot = snapshot
+        self.label_items = {}
+        self.setObjectName('featurePreview')
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 10)
+        layout.setSpacing(10)
+        title = QHBoxLayout()
+        title.setSpacing(8)
+        heading = QLabel("Features Preview")
+        heading.setObjectName('previewTitle')
+        title.addWidget(heading, 1)
+        self.close_button = QPushButton("Close")
+        self.close_button.setToolTip("Hide Features Preview")
+        self.close_button.clicked.connect(parent.hide_nearby_preview)
+        title.addWidget(self.close_button)
+        layout.addLayout(title)
+        legend = QHBoxLayout()
+        legend.setSpacing(6)
+        for label, name in (('Selected', 'previewSelectedSwatch'), ('Nearby', 'previewNearbySwatch')):
+            marker = QLabel()
+            marker.setObjectName(name)
+            marker.setFixedSize(8, 8)
+            legend.addWidget(marker)
+            caption = QLabel(label)
+            caption.setObjectName('previewSecondary')
+            legend.addWidget(caption)
+            if name == 'previewSelectedSwatch':
+                legend.addSpacing(10)
+        legend.addStretch(1)
+        layout.addLayout(legend)
+        distance_row = QHBoxLayout()
+        distance_row.setSpacing(6)
+        distance_caption = QLabel('Range')
+        distance_caption.setObjectName('previewSecondary')
+        distance_row.addWidget(distance_caption)
+        self.distance_value = QDoubleSpinBox()
+        self.distance_value.setDecimals(3)
+        self.distance_value.setRange(0, 1000000000)
+        self.distance_value.setSpecialValueText('Touching')
+        self.distance_value.setToolTip('Zero finds touching features. Enter a distance to include nearby features.')
+        self.distance_units = QComboBox()
+        for label, unit in (('m', Qgis.DistanceUnit.Meters), ('km', Qgis.DistanceUnit.Kilometers),
+                            ('cm', Qgis.DistanceUnit.Centimeters), ('in', Qgis.DistanceUnit.Inches),
+                            ('ft', Qgis.DistanceUnit.Feet), ('yd', Qgis.DistanceUnit.Yards),
+                            ('mi', Qgis.DistanceUnit.Miles)):
+            self.distance_units.addItem(label, unit)
+        distance, unit = parent.preview_distances.get(layer.id(), (0, Qgis.DistanceUnit.Meters))
+        self.distance_value.setValue(distance)
+        self.distance_units.setCurrentIndex(max(0, self.distance_units.findData(unit)))
+        self.apply_distance = QPushButton('Apply')
+        self.apply_distance.setToolTip('Update nearby features using this range')
+        self.apply_distance.clicked.connect(self.apply_preview_distance)
+        distance_row.addWidget(self.distance_value, 1)
+        distance_row.addWidget(self.distance_units)
+        distance_row.addWidget(self.apply_distance)
+        layout.addLayout(distance_row)
+        label_row = QHBoxLayout()
+        label_row.setSpacing(8)
+        label_title = QLabel('Labels')
+        label_title.setObjectName('previewSecondary')
+        label_row.addWidget(label_title)
+        self.label_field = QComboBox()
+        self.label_field.addItem('No label', None)
+        for field in layer.fields():
+            self.label_field.addItem(field.name(), field.name())
+        saved_field = parent.preview_label_fields.get(layer.id())
+        saved_index = self.label_field.findData(saved_field) if saved_field else 0
+        self.label_field.setCurrentIndex(max(0, saved_index))
+        label_row.addWidget(self.label_field, 1)
+        layout.addLayout(label_row)
+        self.canvas = QgsMapCanvas(self)
+        self.canvas.setCanvasColor(QColor(THEMES[parent.theme]["surface"]))
+        if layer.crs().isValid():
+            self.canvas.setDestinationCrs(layer.crs())
+        self.canvas.setLayers([])
+        self.canvas.setMinimumSize(240, 180)
+        self.canvas.setToolTip("Drag to pan, scroll to zoom, or click a feature to select it")
+        self.map_tool = PreviewPanSelectTool(self.canvas, layer, snapshot, parent.focus_preview_feature)
+        self.canvas.setMapTool(self.map_tool)
+        map_frame = QFrame()
+        map_frame.setObjectName('previewMapFrame')
+        map_layout = QVBoxLayout(map_frame)
+        map_layout.setContentsMargins(1, 1, 1, 1)
+        map_layout.addWidget(self.canvas)
+        layout.addWidget(map_frame, 1)
+        self.nearby_band = QgsRubberBand(self.canvas, layer.geometryType())
+        self.nearby_band.setStrokeColor(QColor("#a7aea9"))
+        self.nearby_band.setFillColor(QColor(150, 160, 153, 35))
+        self.nearby_band.setWidth(1)
+        self.nearby_band.setIconSize(8)
+        self.selected_band = QgsRubberBand(self.canvas, layer.geometryType())
+        self.selected_band.setStrokeColor(QColor("#26805b"))
+        self.selected_band.setFillColor(QColor(46, 125, 91, 55))
+        self.selected_band.setWidth(3)
+        self.selected_band.setIconSize(10)
+        bounds = []
+        selected_bounds = []
+        for name, band in (("nearby", self.nearby_band), ("selected", self.selected_band)):
+            for wkb in snapshot[name].values():
+                geometry = QgsGeometry()
+                geometry.fromWkb(wkb)
+                if geometry.isEmpty():
+                    continue
+                band.addGeometry(geometry, None, False)
+                bounds.append(geometry.boundingBox())
+                if name == 'selected':
+                    selected_bounds.append(geometry.boundingBox())
+            band.show()
+        if extent is None and bounds:
+            xmin = min(rect.xMinimum() for rect in bounds)
+            xmax = max(rect.xMaximum() for rect in bounds)
+            ymin = min(rect.yMinimum() for rect in bounds)
+            ymax = max(rect.yMaximum() for rect in bounds)
+            coordinate_scale = max(abs(xmin), abs(xmax), abs(ymin), abs(ymax), 1.0)
+            span = max(xmax - xmin, ymax - ymin, coordinate_scale * 1e-9)
+            margin = span * 0.12
+            if selected_bounds:
+                x = (min(r.xMinimum() for r in selected_bounds) + max(r.xMaximum() for r in selected_bounds)) / 2
+                y = (min(r.yMinimum() for r in selected_bounds) + max(r.yMaximum() for r in selected_bounds)) / 2
+                half_width = max(x - xmin, xmax - x) + margin
+                half_height = max(y - ymin, ymax - y) + margin
+                extent = QgsRectangle(x - half_width, y - half_height, x + half_width, y + half_height)
+            else:
+                extent = QgsRectangle(xmin - margin, ymin - margin, xmax + margin, ymax + margin)
+        if extent is not None:
+            if recenter and selected_bounds:
+                x = (min(r.xMinimum() for r in selected_bounds) + max(r.xMaximum() for r in selected_bounds)) / 2
+                y = (min(r.yMinimum() for r in selected_bounds) + max(r.yMaximum() for r in selected_bounds)) / 2
+                extent = QgsRectangle(x - extent.width() / 2, y - extent.height() / 2,
+                                      x + extent.width() / 2, y + extent.height() / 2)
+            self.canvas.setExtent(extent)
+        self.canvas.refresh()
+        distance = parent.preview_distances.get(layer.id(), (0, None))[0]
+        text = "{} nearby feature(s) found.".format(nearby_count) if distance else "{} touching feature(s) found.".format(nearby_count)
+        if not nearby_count:
+            text = "No nearby features found." if distance else "No touching features found."
+        if snapshot["truncated"]:
+            text += " Map preview is limited; the table is unchanged."
+        self.message = QLabel(text)
+        self.message.setObjectName('previewSecondary')
+        self.message.setWordWrap(True)
+        layout.addWidget(self.message)
+        self.label_field.currentIndexChanged.connect(self.update_labels)
+        self.update_labels()
+
+    def apply_preview_distance(self):
+        distance = self.distance_value.value()
+        crs = self.layer.crs()
+        if distance and (not crs.isValid() or QgsUnitTypes.unitType(crs.mapUnits()) == Qgis.DistanceUnitType.Unknown):
+            self.message.setText('Choose a valid layer coordinate system to measure distance.')
+            return
+        new_range = (distance, self.distance_units.currentData())
+        changed = self.owner.preview_distances.get(self.layer.id(), (0, Qgis.DistanceUnit.Meters)) != new_range
+        self.owner.preview_distances[self.layer.id()] = new_range
+        self.owner.schedule_nearby_preview()
+        if changed:
+            self.owner.preview_extents.pop(self.layer.id(), None)
+            self.owner.preview_selection.pop(self.layer.id(), None)
+
+    def update_labels(self):
+        for item in self.label_items.values():
+            self.canvas.scene().removeItem(item)
+        self.label_items = {}
+        field = self.label_field.currentData()
+        self.owner.preview_label_fields[self.layer.id()] = field
+        if field is None:
+            return
+        index = self.layer.fields().indexFromName(field)
+        if index < 0:
+            return
+        geometries = dict(self.snapshot['nearby'])
+        geometries.update(self.snapshot['selected'])
+        request = QgsFeatureRequest().setFilterFids(list(geometries))
+        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        request.setSubsetOfAttributes([index])
+        for feature in self.layer.getFeatures(request):
+            value = attribute_text(feature.attribute(index))
+            if not value:
+                continue
+            geometry = QgsGeometry()
+            geometry.fromWkb(geometries[feature.id()])
+            anchor = geometry.pointOnSurface()
+            if anchor.isEmpty():
+                anchor = geometry.centroid()
+            if not anchor.isEmpty():
+                self.label_items[feature.id()] = PreviewLabel(
+                    self.canvas, anchor.asPoint(), value, feature.id() in self.snapshot['selected'],
+                    preview_label_angle(geometry))
+
+
 class FindReplaceDialog(QDialog):
     def __init__(self, parent, layer, names):
         super().__init__(parent)
@@ -1269,10 +1622,19 @@ class FinderDialog(QDialog):
         self.pending_selection = set()
         self.syncing_map_selection = False
         self.selected_scope_ids = None
-        self.nearby_scope_ids = None
+        self.nearby_origin_ids = None
+        self.nearby_match_ids = None
         self.nearby_task = None
+        self.nearby_preview_task = None
+        self.nearby_preview_dialog = None
         self.nearby_version = 0
-        self.nearby_description = None
+        self.nearby_enabled = True
+        self.preview_label_fields = {}
+        self.preview_extents = {}
+        self.preview_selection = {}
+        self.preview_distances = {}
+        self.preview_width = 320
+        self.pending_preview_focus = None
         self.statistics_task = None
         self.replace_task = None
         self.statistics_version = 0
@@ -1319,6 +1681,10 @@ class FinderDialog(QDialog):
         self.selection_filter_timer.setSingleShot(True)
         self.selection_filter_timer.setInterval(100)
         self.selection_filter_timer.timeout.connect(self.run_search)
+        self.nearby_update_timer = QTimer(self)
+        self.nearby_update_timer.setSingleShot(True)
+        self.nearby_update_timer.setInterval(150)
+        self.nearby_update_timer.timeout.connect(self.start_nearby_preview)
         self.statistics_refresh_timer = QTimer(self)
         self.statistics_refresh_timer.setSingleShot(True)
         self.statistics_refresh_timer.setInterval(120)
@@ -1372,7 +1738,7 @@ class FinderDialog(QDialog):
         self.edit.setMaximumWidth(360)
         row.addWidget(self.edit, 1)
         self.btn_clear_filters = QPushButton("Clear filters")
-        self.btn_clear_filters.setToolTip("Clear column filters, search, selected-only and nearby views; keep the map selection")
+        self.btn_clear_filters.setToolTip("Clear column filters, search and selected-only view; keep the map selection")
         row.addWidget(self.btn_clear_filters)
         row.addWidget(self.btn_saved_filters)
         row.addStretch(1)
@@ -1410,14 +1776,19 @@ class FinderDialog(QDialog):
         self.btn_add_field = self.fields_menu.addAction("Add field…")
         self.btn_delete_field = self.fields_menu.addAction("Delete field…")
         self.btn_fields.setToolTip("Add or delete a layer attribute")
-        self.btn_nearby = QPushButton("Nearby…")
-        self.btn_nearby.setToolTip("Find features touching or within a distance of the current map selection")
-        for widget in (self.btn_columns, self.btn_select, self.btn_unselect, self.btn_nearby):
+        self.btn_nearby = QPushButton("Features Preview")
+        self.btn_nearby.setObjectName("statsToggle")
+        self.btn_nearby.setCheckable(True)
+        self.btn_nearby.setChecked(True)
+        self.btn_nearby.setToolTip("Show or hide the selected-feature map preview")
+        for widget in (self.btn_columns, self.btn_select, self.btn_unselect):
             tools.addWidget(widget)
         tools.addWidget(self.multi_cb)
         tools.addWidget(self.selected_only_cb)
         tools.addStretch(1)
         tools.addWidget(self.selection_status)
+        tools.addSpacing(6)
+        tools.addWidget(self.btn_nearby)
         clay.addWidget(self.selection_tools, 1, 0, 1, 2)
 
         self.table = QTableWidget()
@@ -1450,8 +1821,18 @@ class FinderDialog(QDialog):
             corner_layout.addWidget(corner_label)
         self.table.setProperty("editing", "false")
         self.statistics_strip = StatisticsStrip(self.table, self)
-        lay.addWidget(self.statistics_strip)
-        lay.addWidget(self.table)
+        table_area = QFrame()
+        table_area.setObjectName('tableArea')
+        table_layout = QVBoxLayout(table_area)
+        table_layout.setContentsMargins(10, 10, 10, 10)
+        table_layout.setSpacing(0)
+        table_layout.addWidget(self.statistics_strip)
+        table_layout.addWidget(self.table)
+        self.nearby_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.nearby_splitter.setChildrenCollapsible(False)
+        self.nearby_splitter.addWidget(table_area)
+        self.nearby_splitter.setStretchFactor(0, 1)
+        lay.addWidget(self.nearby_splitter, 1)
 
         pager = QHBoxLayout()
         pager.addWidget(QLabel("Rows per page"))
@@ -1562,7 +1943,7 @@ class FinderDialog(QDialog):
         self.btn_delete_field.triggered.connect(self.delete_field)
         self.btn_fields.clicked.connect(lambda: self.fields_menu.popup(
             self.btn_fields.mapToGlobal(QPoint(0, self.btn_fields.height()))))
-        self.btn_nearby.clicked.connect(self.nearby_menu)
+        self.btn_nearby.toggled.connect(self.set_nearby_preview_enabled)
         self.selected_only_cb.toggled.connect(self.set_selected_scope)
         self.btn_saved_filters.clicked.connect(self.saved_filters_menu)
         self.btn_clear_filters.clicked.connect(self.clear_filters)
@@ -1679,6 +2060,9 @@ class FinderDialog(QDialog):
     def apply_theme(self):
         self.setFont(QFont(self.font_family, self.font_size))
         self.setStyleSheet(build_css(self.theme, self.font_family, self.font_size))
+        if self.nearby_preview_dialog is not None:
+            self.nearby_preview_dialog.canvas.setCanvasColor(QColor(THEMES[self.theme]["surface"]))
+            self.nearby_preview_dialog.canvas.refresh()
         for button, name in ((self.btn_settings, "settings"), (self.btn_refresh, "refresh"),
                              (self.btn_undo, "undo"), (self.btn_redo, "redo"),
                              (self.btn_copy, "copy"), (self.btn_csv, "export"),
@@ -2335,11 +2719,9 @@ class FinderDialog(QDialog):
         return layer if layer is not None and layer.type() == QgsMapLayer.LayerType.VectorLayer and layer.isValid() else None
 
     def on_layer_changed(self, *args):
+        self.pending_preview_focus = None
         self.selection_filter_timer.stop()
         self.cancel_nearby()
-        self.nearby_scope_ids = None
-        self.nearby_description = None
-        self.btn_nearby.setText("Nearby…")
         self.selected_only_cb.blockSignals(True)
         self.selected_only_cb.setChecked(False)
         self.selected_only_cb.blockSignals(False)
@@ -2349,6 +2731,7 @@ class FinderDialog(QDialog):
         self.search_timer.stop()
         self.hook_layer()
         self.load_fields(keep=False)
+        self.schedule_nearby_preview()
 
     # ---------- watch the layer for edits ----------
     def unhook_layer(self):
@@ -2412,6 +2795,7 @@ class FinderDialog(QDialog):
     def schedule_refresh(self, *args):
         if self.own_edit:
             return
+        self.invalidate_nearby_after_layer_change()
         self.invalidate_results()
         if self.isVisible():
             self.timer.start()
@@ -2419,6 +2803,7 @@ class FinderDialog(QDialog):
     def soft_refresh(self, *args):
         """Re-read fields and value lists, keeping the current choices if they still exist."""
         self.edit_failure = None
+        self.invalidate_nearby_after_layer_change()
         self.invalidate_results()
         if self.current_layer() is None:
             self.hook_layer()
@@ -2617,10 +3002,6 @@ class FinderDialog(QDialog):
         self.filter_timer.stop()
         self.selection_filter_timer.stop()
         self.pending_cascade_start = None
-        self.cancel_nearby()
-        self.nearby_scope_ids = None
-        self.nearby_description = None
-        self.btn_nearby.setText("Nearby…")
         self.selected_only_cb.blockSignals(True)
         self.selected_only_cb.setChecked(False)
         self.selected_only_cb.blockSignals(False)
@@ -2634,109 +3015,123 @@ class FinderDialog(QDialog):
     def set_selected_scope(self, enabled):
         layer = self.current_layer()
         self.selection_filter_timer.stop()
-        if enabled:
-            self.cancel_nearby()
-            self.nearby_scope_ids = None
-            self.nearby_description = None
-            self.btn_nearby.setText("Nearby…")
         self.selected_scope_ids = tuple(sorted(layer.selectedFeatureIds())) if enabled and layer else None
         self.page = 0
         self.run_search()
 
+    def invalidate_nearby_after_layer_change(self):
+        self.schedule_nearby_preview()
+
     def cancel_nearby(self):
         self.nearby_version += 1
+        self.nearby_update_timer.stop()
         if self.nearby_task is not None:
             self.nearby_task.cancel()
             self.nearby_task = None
+        self.close_nearby_preview()
+        self.nearby_origin_ids = None
+        self.nearby_match_ids = None
 
-    def nearby_menu(self):
-        menu = QMenu(self)
-        touching = menu.addAction("Touching selected features")
-        distance = menu.addAction("Within distance of selection…")
-        menu.addSeparator()
-        clear = menu.addAction("Clear nearby results")
-        clear.setEnabled(self.nearby_scope_ids is not None or self.nearby_task is not None)
-        action = menu.exec(self.btn_nearby.mapToGlobal(QPoint(0, self.btn_nearby.height())))
-        if action == touching:
-            self.find_nearby(None)
-        elif action == distance:
-            self.ask_nearby_distance()
-        elif action == clear:
-            self.clear_nearby()
+    def close_nearby_preview(self):
+        if self.nearby_preview_task is not None:
+            self.nearby_preview_task.cancel()
+            self.nearby_preview_task = None
+        if self.nearby_preview_dialog is not None:
+            preview = self.nearby_preview_dialog
+            self.nearby_preview_dialog = None
+            self.preview_extents[preview.layer.id()] = QgsRectangle(preview.canvas.extent())
+            self.preview_width = preview.width()
+            preview.hide()
+            preview.setParent(None)
+            preview.deleteLater()
 
-    def ask_nearby_distance(self):
+    def show_nearby_preview(self, layer, selected_ids, nearby_ids, version):
+        def finished(exception, snapshot=None):
+            if self.nearby_preview_task is not task:
+                return
+            self.nearby_preview_task = None
+            if (self.closing or not self.nearby_enabled or version != self.nearby_version
+                    or self.current_layer() != layer or set(layer.selectedFeatureIds()) != set(selected_ids)):
+                return
+            if exception is not None or snapshot is None:
+                if exception is not None:
+                    self.status.setText("Nearby preview could not be displayed: {}".format(exception))
+                return
+            current_selection = frozenset(selected_ids)
+            recenter = self.preview_selection.get(layer.id()) != current_selection
+            preview = NearbyPreviewPanel(self, layer, snapshot, len(nearby_ids),
+                                         self.preview_extents.get(layer.id()), recenter)
+            self.preview_selection[layer.id()] = current_selection
+            self.nearby_preview_dialog = preview
+            self.nearby_splitter.addWidget(preview)
+            self.nearby_splitter.setStretchFactor(1, 0)
+            preview.show()
+            width = self.nearby_splitter.width() - self.nearby_splitter.handleWidth()
+            self.nearby_splitter.setSizes([max(1, width - self.preview_width), self.preview_width])
+        try:
+            task = QgsTask.fromFunction("QuickTable: nearby preview", collect_nearby_preview,
+                source=QgsVectorLayerFeatureSource(layer), selected_ids=selected_ids,
+                nearby_ids=nearby_ids, on_finished=finished)
+            task.setDependentLayers([layer])
+            self.nearby_preview_task = task
+            QgsApplication.taskManager().addTask(task)
+        except Exception as exc:
+            self.nearby_preview_task = None
+            self.status.setText("Nearby preview could not be started: {}".format(exc))
+
+    def set_nearby_preview_enabled(self, enabled):
+        self.nearby_enabled = bool(enabled)
+        self.schedule_nearby_preview()
+
+    def hide_nearby_preview(self):
+        self.btn_nearby.setChecked(False)
+
+    def schedule_nearby_preview(self, *args):
+        self.cancel_nearby()
         layer = self.current_layer()
-        if not layer or not layer.isSpatial():
-            self.status.setText("Choose a spatial layer and select features first.")
-            return
-        if not layer.selectedFeatureIds():
-            self.status.setText("Select one or more features on the map or in the table first.")
-            return
-        crs = layer.crs()
-        units = QgsUnitTypes.toString(crs.mapUnits()) if crs.isValid() else "layer units (CRS unknown)"
-        prompt = "Distance in {} (straight-line, layer coordinates):".format(units)
-        if crs.isValid() and crs.isGeographic():
-            prompt += "\nThis layer uses geographic coordinates; distance is in degrees, not metres."
-        distance, ok = QInputDialog.getDouble(self, "Find nearby", prompt, 0.0, 0.0, 1000000000.0, 4)
-        if ok:
-            self.find_nearby(distance, units)
+        if (not self.closing and self.nearby_enabled and layer is not None
+                and layer.isSpatial() and layer.selectedFeatureIds()):
+            self.nearby_update_timer.start()
 
-    def find_nearby(self, distance=None, units=None):
+    def start_nearby_preview(self):
         layer = self.current_layer()
-        if not layer or not layer.isSpatial():
-            self.status.setText("Choose a spatial layer and select features first.")
+        if self.closing or not self.nearby_enabled or layer is None or not layer.isSpatial():
             return
         ids = tuple(layer.selectedFeatureIds())
         if not ids:
-            self.status.setText("Select one or more features on the map or in the table first.")
             return
-        self.cancel_nearby()
         version = self.nearby_version
-        layer_id = layer.id()
-        description = "touching selection" if distance is None else "within {:g} {}".format(distance, units or "layer units")
+        distance, units = self.preview_distances.get(layer.id(), (0, Qgis.DistanceUnit.Meters))
+        crs = layer.crs()
+        target_units = Qgis.DistanceUnit.Meters if crs.isGeographic() else crs.mapUnits()
+        distance = distance * QgsUnitTypes.fromUnitToUnitFactor(units, target_units) if distance else None
 
         def finished(exception, result=None):
-            if self.closing or version != self.nearby_version:
+            if self.nearby_task is not task:
                 return
             self.nearby_task = None
-            current = self.current_layer()
-            if current is None or current.id() != layer_id:
+            if (self.closing or not self.nearby_enabled or version != self.nearby_version
+                    or self.current_layer() != layer or set(layer.selectedFeatureIds()) != set(ids)):
                 return
             if exception is not None:
-                self.status.setText("Nearby search failed: {}".format(exception))
+                self.status.setText("Map preview failed: {}".format(exception))
                 return
             if result is None:
-                self.status.setText("Nearby search canceled.")
                 return
-            self.nearby_scope_ids = result[0]
-            self.nearby_description = description
-            self.btn_nearby.setText("Nearby ✓")
-            self.selected_only_cb.blockSignals(True)
-            self.selected_only_cb.setChecked(False)
-            self.selected_only_cb.blockSignals(False)
-            self.selected_scope_ids = None
-            self.page = 0
-            self.run_search()
+            self.nearby_origin_ids = ids
+            self.nearby_match_ids = tuple(result[0])
+            self.show_nearby_preview(layer, ids, self.nearby_match_ids, version)
 
         try:
             task = QgsTask.fromFunction("QuickTable: find nearby features", collect_nearby_task,
-                                        source=QgsVectorLayerFeatureSource(layer), selected_ids=ids,
-                                        distance=distance, on_finished=finished)
+                source=QgsVectorLayerFeatureSource(layer), selected_ids=ids, distance=distance,
+                source_crs=crs, transform_context=QgsProject.instance().transformContext(), on_finished=finished)
             task.setDependentLayers([layer])
             self.nearby_task = task
-            self.status.setText("Finding nearby features…")
             QgsApplication.taskManager().addTask(task)
         except Exception as exc:
             self.nearby_task = None
-            self.status.setText("Nearby search failed: {}".format(exc))
-
-    def clear_nearby(self):
-        self.cancel_nearby()
-        self.nearby_scope_ids = None
-        self.nearby_description = None
-        self.btn_nearby.setText("Nearby…")
-        self.page = 0
-        self.run_search()
+            self.status.setText("Map preview failed: {}".format(exc))
 
     def saved_filters_key(self):
         key = self.column_settings_key()
@@ -2850,9 +3245,6 @@ class FinderDialog(QDialog):
     # ---------- filtering ----------
     def build_expr(self):
         parts = [self.part_expr(row.field, row.value) for row in self.filter_rows]
-        nearby = getattr(self, "nearby_scope_ids", None)
-        if nearby is not None:
-            parts.append("$id IN ({})".format(",".join(str(int(fid)) for fid in nearby)) if nearby else "FALSE")
         if self.selected_scope_ids is not None:
             parts.append("$id IN ({})".format(",".join(str(int(fid)) for fid in self.selected_scope_ids)) if self.selected_scope_ids else "FALSE")
         text = self.edit.text().strip()
@@ -3079,8 +3471,6 @@ class FinderDialog(QDialog):
             message = ("No matching records. Adjust a column filter or search to see results."
                        if not self.result_ids else
                        "{} record(s)  |  click a column name to sort or its filter below".format(r))
-            if self.nearby_description:
-                message = "Nearby: {}  |  {} record(s) on this page".format(self.nearby_description, r)
             if self.pending_notice and layer.isModified():
                 message = self.pending_notice
             self.pending_notice = None
@@ -3099,6 +3489,39 @@ class FinderDialog(QDialog):
         elif self.btn_statistics.isChecked():
             self.cancel_statistics()
             self.statistics_strip.set_state("error", message=self.status.text())
+        if self.pending_preview_focus and not self.selection_filter_timer.isActive():
+            layer_id, fid = self.pending_preview_focus
+            self.pending_preview_focus = None
+            if layer.id() == layer_id and fid in layer.selectedFeatureIds():
+                self.focus_preview_feature(layer, fid)
+
+    def focus_preview_feature(self, layer, fid):
+        """Show the clicked preview feature without changing active filters."""
+        if self.current_layer() != layer:
+            return
+        if self.result_ids is None or self.selection_filter_timer.isActive():
+            self.pending_preview_focus = (layer.id(), fid)
+            return
+        try:
+            position = self.result_ids.index(fid)
+        except ValueError:
+            self.status.setText('Selected feature is outside the current table filters.')
+            return
+        size = self.page_size.currentData()
+        page = position // size if size else 0
+        if page != self.page:
+            self.page = page
+            self.render_page()
+        for row in range(self.table.rowCount()):
+            if self.row_fid(row) != fid:
+                continue
+            column = next((c for c in range(self.table.columnCount())
+                           if not self.table.isColumnHidden(c)), None)
+            if column is not None:
+                index = self.table.model().index(row, column)
+                self.table.selectionModel().setCurrentIndex(index, QItemSelectionModel.SelectionFlag.NoUpdate)
+                self.table.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
+            break
 
     # ---------- editing ----------
     convert = staticmethod(convert_attribute)
@@ -3294,6 +3717,7 @@ class FinderDialog(QDialog):
             self.own_edit = False
             self.update_undo_buttons()
         if ok:
+            self.invalidate_nearby_after_layer_change()
             changed = layer.editBuffer().changedAttributeValues().get(fid, {}) if layer.editBuffer() else {}
             self.table.blockSignals(True)
             try:
@@ -3917,7 +4341,10 @@ class FinderDialog(QDialog):
 
     def on_layer_selection_changed(self, *args):
         layer = self.current_layer()
-        if layer is None or layer.id() != self.table_layer_id:
+        if layer is None:
+            return
+        self.schedule_nearby_preview()
+        if layer.id() != self.table_layer_id:
             return
         selected = set(layer.selectedFeatureIds())
         self.pending_selection = selected

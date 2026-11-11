@@ -12,7 +12,8 @@ _Sample data: Philippine PSGC boundaries from [altcoder/philippines-psgc-shapefi
 
 - **Find records:** Search all attributes, combine column filters, select multiple values and save filters.
 - **Organize tables:** Sort, hide, resize and wrap columns; customize numeric display and browse by page.
-- **Work with selections:** Sync rows with QGIS, show selected features and find nearby features.
+- **Preview features:** See selected and nearby features on an interactive map, search within a chosen distance, and label features using a layer field.
+- **Work with selections:** Keep table and QGIS selections in sync and jump to a feature's table row from the preview.
 - **Explore and clean data:** Save views and preview find-and-replace edits.
 - **Edit attributes:** Update cells, bulk edit, autofill, manage fields and delete features with undo/redo.
 - **Inspect and export:** View statistics across filtered results, copy rows and export CSV in the background.
@@ -36,15 +37,26 @@ Requires QGIS **3.44 or later in the 3.x series**. No extra Python packages are 
 
 1. Open **QuickTable** from the Plugins menu or toolbar and choose a vector layer.
 2. Type in **Search all attributes**, or click beneath a column name to filter. Click the name to sort.
-3. Select rows to select features in QGIS. Use **Selected only** or **Nearby** to narrow the view.
+3. Select rows to select features in QGIS. Use **Selected only** to narrow the view.
 4. Enable **Edit mode** to change writable cells, or use **Bulk edit** and **Autofill**. Choose **Save edits** to commit.
 5. Turn on **Statistics**, copy rows, or **Export CSV** for selected rows, the current page or all filtered results.
+
+### Features Preview
+
+With **Features Preview** enabled, select a feature in the table or in QGIS to open the sidebar. Selected features appear in green and nearby features in gray. The preview does not filter the table.
+
+- **Choose a range:** The default, **Touching**, shows features that touch the selection. To search farther, enter a distance, select metres, kilometres, centimetres, inches, feet, yards or miles, and click **Apply**. Distances are measured between feature geometries.
+- **Navigate:** Drag to pan and use the mouse wheel to zoom. The map centers on a new selection while retaining its zoom level. Click a displayed feature to select it and bring its row into view, including on another page. Active table filters still apply.
+- **Show labels:** Under **Labels**, choose a field such as a lot number. Labels appear on selected and nearby features and follow each feature's shape.
+- **Hide or reopen:** Click **Close** on the sidebar, or use the **Features Preview** toolbar button.
+
+Distance searches require a valid layer coordinate system. Geographic layers use a local metric projection, so their distances are approximate. Large selections and nearby results are sampled in the preview.
 
 ### 💡 Keep in mind
 
 - **NULL and blank text differ:** Right-click a writable cell to set NULL or empty text. Spaces are preserved.
 - **Discard edits affects the whole layer**, including pending edits made elsewhere in QGIS.
-- Search matches literal text; `%` and `_` are ordinary characters. Nearby distances use layer CRS units.
+- Search matches literal text; `%` and `_` are ordinary characters.
 - Large result sets stay paginated. Export all matches directly through **Export CSV**.
 - CSV uses visible columns and protects against spreadsheet formulas. NULL and empty text both export as blank cells.
 - Find and replace works on one or all writable text fields, across selected rows, filtered results, or the entire layer. Preview changes before applying; they remain undoable until saved.

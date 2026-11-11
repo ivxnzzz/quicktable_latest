@@ -15,8 +15,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from qgis.core import (QgsApplication, QgsExpression, QgsFeature, QgsField, QgsGeometry,
                            QgsProject, QgsFeatureRequest, QgsVectorLayer, QgsVectorLayerFeatureSource)
-    from qgis.PyQt.QtCore import Qt, QMetaType, QSettings, QLocale, QPoint, QDate, QTimer
-    from qgis.PyQt.QtGui import QFont, QFontDatabase, QFontMetrics
+    from qgis.PyQt.QtCore import Qt, QMetaType, QSettings, QLocale, QPoint, QPointF, QDate, QTimer
+    from qgis.PyQt.QtGui import QFont, QFontDatabase, QFontMetrics, QWheelEvent
+    from qgis.PyQt.QtTest import QTest
     from qgis.PyQt.QtWidgets import QComboBox, QLineEdit, QAbstractItemView, QDialog
 except ImportError:
     QgsApplication = None
@@ -24,6 +25,87 @@ except ImportError:
 
 @unittest.skipIf(QgsApplication is None, "Requires QGIS Python environment")
 class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
+    def test_selected_lot_automatically_previews_touching_lots_without_filtering_table(self):
+        layer = QgsVectorLayer('Polygon?crs=EPSG:3857&field=name:string', 'lots', 'memory')
+        for name, x in (('origin', 0), ('touching', 1), ('far', 20)):
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes([name])
+            feature.setGeometry(QgsGeometry.fromWkt(
+                'POLYGON (({0} 0,{1} 0,{1} 1,{0} 1,{0} 0))'.format(x, x + 1)))
+            layer.dataProvider().addFeatures([feature])
+        ids = {f['name']: f.id() for f in layer.getFeatures()}
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['origin']])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            QgsApplication.processEvents()
+            if dialog.nearby_preview_dialog is not None:
+                break
+            time.sleep(0.01)
+        self.assertIsNotNone(dialog.nearby_preview_dialog)
+        self.assertEqual(set(dialog.nearby_origin_ids), {ids['origin']})
+        self.assertEqual(set(dialog.nearby_match_ids), {ids['touching']})
+        self.assertEqual(set(dialog.result_ids), set(ids.values()))
+        self.assertEqual(set(layer.selectedFeatureIds()), {ids['origin']})
+
+    def test_nearby_preview_snapshot_is_bounded_and_cancellable(self):
+        layer = QgsVectorLayer('Point?crs=EPSG:3857', 'preview', 'memory')
+        for x in range(4):
+            feature = QgsFeature(layer.fields())
+            feature.setGeometry(QgsGeometry.fromWkt('POINT ({} 0)'.format(x)))
+            layer.dataProvider().addFeatures([feature])
+        ids = [f.id() for f in layer.getFeatures()]
+        source = QgsVectorLayerFeatureSource(layer)
+        task = SimpleNamespace(isCanceled=lambda: False)
+        result = self.plugin.collect_nearby_preview(task, source, ids[:1], ids[1:], 1, 2)
+        self.assertEqual(set(result['selected']), {ids[0]})
+        self.assertEqual(len(result['nearby']), 2)
+        self.assertTrue(result['truncated'])
+        self.assertIsNone(self.plugin.collect_nearby_preview(
+            SimpleNamespace(isCanceled=lambda: True), source, ids[:1], ids[1:], 1, 2))
+
+    def test_nearby_preview_renders_point_and_polygon_without_changing_selection(self):
+        for geometry_type, wkts in (
+                ('Point', ['POINT (0 0)', 'POINT (1 1)']),
+                ('LineString', ['LINESTRING (0 0, 1 1)', 'LINESTRING (1 1, 2 2)']),
+                ('Polygon', ['POLYGON ((0 0,1 0,1 1,0 1,0 0))',
+                             'POLYGON ((1 0,2 0,2 1,1 1,1 0))'])):
+            with self.subTest(geometry_type=geometry_type):
+                layer = QgsVectorLayer(geometry_type + '?crs=EPSG:3857', 'preview', 'memory')
+                for wkt in wkts:
+                    feature = QgsFeature(layer.fields())
+                    feature.setGeometry(QgsGeometry.fromWkt(wkt))
+                    layer.dataProvider().addFeatures([feature])
+                ids = [f.id() for f in layer.getFeatures()]
+                layer.selectByIds([ids[0]])
+                parent = self.create_dialog(layer)
+                snapshot = self.plugin.collect_nearby_preview(SimpleNamespace(isCanceled=lambda: False),
+                    QgsVectorLayerFeatureSource(layer), ids[:1], ids[1:])
+                preview = self.plugin.NearbyPreviewPanel(parent, layer, snapshot, 1)
+                self.addCleanup(preview.deleteLater)
+                preview.show()
+                QgsApplication.processEvents()
+                self.assertGreater(preview.selected_band.numberOfVertices(), 0)
+                self.assertGreater(preview.nearby_band.numberOfVertices(), 0)
+                self.assertFalse(preview.canvas.extent().isEmpty())
+                self.assertEqual(set(layer.selectedFeatureIds()), {ids[0]})
+                preview.close()
+
+    def test_nearby_preview_extent_handles_single_point_at_large_coordinates(self):
+        layer = QgsVectorLayer('Point?crs=EPSG:3857', 'preview', 'memory')
+        feature = QgsFeature(layer.fields())
+        feature.setGeometry(QgsGeometry.fromWkt('POINT (10000000 10000000)'))
+        layer.dataProvider().addFeatures([feature])
+        fid = next(layer.getFeatures()).id()
+        parent = self.create_dialog(layer)
+        snapshot = self.plugin.collect_nearby_preview(SimpleNamespace(isCanceled=lambda: False),
+            QgsVectorLayerFeatureSource(layer), [fid], [])
+        preview = self.plugin.NearbyPreviewPanel(parent, layer, snapshot, 0)
+        self.addCleanup(preview.deleteLater)
+        self.assertFalse(preview.canvas.extent().isEmpty())
+        self.assertTrue(preview.canvas.extent().contains(feature.geometry().asPoint()))
+
     def test_multi_column_replace_validates_final_combined_values(self):
         from qgis.core import QgsFieldConstraints
         layer = QgsVectorLayer('None?field=first:string&field=second:string', 'constraints', 'memory')
@@ -640,7 +722,6 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         self.assertEqual(dialog.filter_rows, [])
         self.assertFalse(dialog.selected_only_cb.isChecked())
         self.assertIsNone(dialog.selected_scope_ids)
-        self.assertIsNone(dialog.nearby_scope_ids)
         self.assertEqual(len(dialog.result_ids), 4)
         self.assertEqual(set(layer.selectedFeatureIds()), {ids[1]})
 
@@ -661,45 +742,365 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         self.assertEqual(set(nearby), {features["touching"], features["near"]})
         self.assertIsNone(self.plugin.collect_nearby(SimpleNamespace(isCanceled=lambda: True), source, [features["origin"]], 1))
 
-    def test_nearby_results_and_clear_in_dialog(self):
-        layer = QgsVectorLayer("Point?crs=EPSG:3857&field=name:string", "points", "memory")
-        for name, x in (("origin", 0), ("near", 2), ("far", 20)):
+    def make_preview_lots(self):
+        layer = QgsVectorLayer('Polygon?crs=EPSG:3857&field=name:string', 'lots', 'memory')
+        for name, x in (('first', 0), ('second', 1), ('far', 20)):
             feature = QgsFeature(layer.fields())
             feature.setAttributes([name])
-            feature.setGeometry(QgsGeometry.fromWkt("POINT ({} 0)".format(x)))
+            feature.setGeometry(QgsGeometry.fromWkt(
+                'POLYGON (({0} 0,{1} 0,{1} 1,{0} 1,{0} 0))'.format(x, x + 1)))
             layer.dataProvider().addFeatures([feature])
-        ids = {feature["name"]: feature.id() for feature in layer.getFeatures()}
-        dialog = self.create_dialog(layer)
-        layer.selectByIds([ids["origin"]])
-        dialog.find_nearby(3, "metres")
-        deadline = time.monotonic() + 10
-        while dialog.nearby_task is not None and time.monotonic() < deadline:
-            QgsApplication.processEvents()
-            time.sleep(0.01)
-        self.wait_for_results(dialog)
-        self.assertEqual(set(dialog.result_ids), {ids["near"]})
-        self.assertEqual(set(layer.selectedFeatureIds()), {ids["origin"]})
-        dialog.clear_nearby()
-        self.wait_for_results(dialog)
-        self.assertEqual(len(dialog.result_ids), 3)
+        return layer, {f['name']: f.id() for f in layer.getFeatures()}
 
-    def test_nearby_without_matches_keeps_empty_result(self):
-        layer = QgsVectorLayer("Point?crs=EPSG:3857&field=name:string", "points", "memory")
-        feature = QgsFeature(layer.fields())
-        feature.setAttributes(["only"])
-        feature.setGeometry(QgsGeometry.fromWkt("POINT (0 0)"))
-        layer.dataProvider().addFeatures([feature])
-        dialog = self.create_dialog(layer)
-        layer.selectByIds([next(layer.getFeatures()).id()])
-        dialog.find_nearby(1, "metres")
+    def wait_for_lot_preview(self, dialog, selected, touching):
         deadline = time.monotonic() + 10
-        while dialog.nearby_task is not None and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            QgsApplication.processEvents()
+            if (dialog.nearby_preview_dialog is not None
+                    and set(dialog.nearby_origin_ids or ()) == set(selected)
+                    and set(dialog.nearby_match_ids or ()) == set(touching)):
+                return dialog.nearby_preview_dialog
+            time.sleep(0.01)
+        self.fail('Automatic lot preview did not update: ' + dialog.status.text())
+
+    def test_lot_preview_follows_selection_and_preserves_table(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        layer.selectByIds([ids['second']])
+        self.wait_for_lot_preview(dialog, [ids['second']], [ids['first']])
+        self.assertEqual(set(dialog.result_ids), set(ids.values()))
+
+    def test_preview_range_finds_nearby_features_in_selected_units(self):
+        from qgis.core import Qgis
+        layer = QgsVectorLayer('Polygon?crs=EPSG:3857&field=name:string', 'lots', 'memory')
+        for name, x in (('origin', 0), ('near', 2), ('far', 10)):
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes([name])
+            feature.setGeometry(QgsGeometry.fromWkt(
+                'POLYGON (({0} 0,{1} 0,{1} 1,{0} 1,{0} 0))'.format(x, x + 1)))
+            layer.dataProvider().addFeatures([feature])
+        ids = {f['name']: f.id() for f in layer.getFeatures()}
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['origin']])
+        panel = self.wait_for_lot_preview(dialog, [ids['origin']], [])
+        panel.distance_value.setValue(40)
+        panel.distance_units.setCurrentIndex(panel.distance_units.findData(Qgis.DistanceUnit.Inches))
+        panel.apply_distance.click()
+        panel = self.wait_for_lot_preview(dialog, [ids['origin']], [ids['near']])
+        self.assertAlmostEqual(panel.distance_value.value(), 40)
+        self.assertEqual(panel.distance_units.currentData(), Qgis.DistanceUnit.Inches)
+        self.assertEqual(set(dialog.result_ids), set(ids.values()))
+        panel.distance_value.setValue(0)
+        panel.apply_distance.click()
+        self.wait_for_lot_preview(dialog, [ids['origin']], [])
+
+    def test_preview_range_measures_geographic_layers_in_metres(self):
+        layer = QgsVectorLayer('Point?crs=EPSG:4326&field=name:string', 'points', 'memory')
+        for name, x in (('origin', 121), ('near', 121.00001), ('far', 121.001)):
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes([name])
+            feature.setGeometry(QgsGeometry.fromWkt('POINT ({} 14)'.format(x)))
+            layer.dataProvider().addFeatures([feature])
+        ids = {f['name']: f.id() for f in layer.getFeatures()}
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['origin']])
+        panel = self.wait_for_lot_preview(dialog, [ids['origin']], [])
+        panel.distance_value.setValue(2)
+        panel.apply_distance.click()
+        self.wait_for_lot_preview(dialog, [ids['origin']], [ids['near']])
+        self.assertEqual(set(dialog.result_ids), set(ids.values()))
+
+    def test_lot_preview_click_selects_touching_feature(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        point = panel.canvas.getCoordinateTransform().transform(1.5, 0.5)
+        QTest.mouseClick(panel.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=QPoint(round(point.x()), round(point.y())))
+        self.assertEqual(set(layer.selectedFeatureIds()), {ids['second']})
+        self.wait_for_lot_preview(dialog, [ids['second']], [ids['first']])
+        self.assertEqual(set(dialog.result_ids), set(ids.values()))
+
+    def test_preview_click_moves_table_to_selected_feature_page(self):
+        layer = QgsVectorLayer('Polygon?crs=EPSG:3857&field=name:string', 'lots', 'memory')
+        for x in range(101):
+            feature = QgsFeature(layer.fields())
+            feature.setAttributes([str(x)])
+            feature.setGeometry(QgsGeometry.fromWkt(
+                'POLYGON (({0} 0,{1} 0,{1} 1,{0} 1,{0} 0))'.format(x, x + 1)))
+            layer.dataProvider().addFeatures([feature])
+        ids = [f.id() for f in layer.getFeatures()]
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        dialog.page_size.setCurrentIndex(dialog.page_size.findData(100))
+        self.wait_for_results(dialog)
+        layer.selectByIds([ids[99]])
+        panel = self.wait_for_lot_preview(dialog, [ids[99]], [ids[98], ids[100]])
+        point = panel.canvas.getCoordinateTransform().transform(100.5, 0.5)
+        QTest.mouseClick(panel.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=QPoint(round(point.x()), round(point.y())))
+        self.assertEqual(set(layer.selectedFeatureIds()), {ids[100]})
+        self.assertEqual(dialog.page, 1)
+        self.assertEqual(dialog.row_fid(dialog.table.currentRow()), ids[100])
+        self.assertEqual(set(dialog.selected_fids()), {ids[100]})
+
+    def test_preview_click_respects_active_table_filter(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        dialog.edit.setText('first')
+        dialog.run_search()
+        self.wait_for_results(dialog)
+        layer.selectByIds([ids['first']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        point = panel.canvas.getCoordinateTransform().transform(1.5, 0.5)
+        QTest.mouseClick(panel.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=QPoint(round(point.x()), round(point.y())))
+        self.assertEqual(set(layer.selectedFeatureIds()), {ids['second']})
+        self.assertEqual(set(dialog.result_ids), {ids['first']})
+        self.assertIn('outside the current table filters', dialog.status.text())
+
+    def test_preview_click_updates_selected_only_table(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        dialog.selected_only_cb.setChecked(True)
+        self.wait_for_results(dialog)
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        point = panel.canvas.getCoordinateTransform().transform(1.5, 0.5)
+        QTest.mouseClick(panel.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=QPoint(round(point.x()), round(point.y())))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            QgsApplication.processEvents()
+            if dialog.result_ids is not None and set(dialog.result_ids) == {ids['second']}:
+                break
+            time.sleep(0.01)
+        self.assertEqual(set(dialog.result_ids), {ids['second']})
+        self.assertEqual(dialog.row_fid(dialog.table.currentRow()), ids['second'])
+
+    def test_lot_preview_centers_new_selection_and_keeps_zoom_and_width(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        dialog.nearby_splitter.setSizes([500, 450])
+        QgsApplication.processEvents()
+        extent = panel.canvas.extent()
+        extent.scale(0.7)
+        panel.canvas.setExtent(extent)
+        QgsApplication.processEvents()
+        before = panel.canvas.extent()
+        width = panel.width()
+        layer.selectByIds([ids['second']])
+        new_panel = self.wait_for_lot_preview(dialog, [ids['second']], [ids['first']])
+        QgsApplication.processEvents()
+        after = new_panel.canvas.extent()
+        self.assertAlmostEqual(after.center().x(), 1.5, places=5)
+        self.assertAlmostEqual(after.center().y(), 0.5, places=5)
+        self.assertAlmostEqual(after.width(), before.width(), places=5)
+        self.assertAlmostEqual(new_panel.width(), width, delta=2)
+        self.assertEqual(dialog.btn_nearby.text(), 'Features Preview')
+
+    def test_lot_preview_centers_multiple_selected_features(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first'], ids['far']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first'], ids['far']], [ids['second']])
+        self.assertAlmostEqual(panel.canvas.extent().center().x(), 10.5, places=5)
+        self.assertAlmostEqual(panel.canvas.extent().center().y(), 0.5, places=5)
+
+    def test_lot_preview_labels_selected_feature_with_chosen_field(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        panel.label_field.setCurrentIndex(panel.label_field.findData('name'))
+        self.assertEqual({fid: item.text for fid, item in panel.label_items.items()},
+                         {ids['first']: 'first', ids['second']: 'second'})
+        self.assertTrue(panel.label_items[ids['first']].selected)
+        self.assertFalse(panel.label_items[ids['second']].selected)
+        item = panel.label_items[ids['first']]
+        previous_position = item.pos()
+        extent = panel.canvas.extent()
+        extent.scale(0.7)
+        extent.setXMinimum(extent.xMinimum() + 0.3)
+        extent.setXMaximum(extent.xMaximum() + 0.3)
+        panel.canvas.setExtent(extent)
+        QgsApplication.processEvents()
+        self.assertNotEqual(item.pos(), previous_position)
+        layer.selectByIds([ids['second']])
+        panel = self.wait_for_lot_preview(dialog, [ids['second']], [ids['first']])
+        self.assertEqual(panel.label_field.currentData(), 'name')
+        self.assertEqual({fid: item.text for fid, item in panel.label_items.items()},
+                         {ids['first']: 'first', ids['second']: 'second'})
+        self.assertFalse(panel.label_items[ids['first']].selected)
+        self.assertTrue(panel.label_items[ids['second']].selected)
+        panel.label_field.setCurrentIndex(0)
+        self.assertEqual(panel.label_items, {})
+
+    def test_preview_label_follows_feature_angle_and_uses_text_halo(self):
+        layer = QgsVectorLayer('Polygon?crs=EPSG:3857&field=name:string', 'lots', 'memory')
+        feature = QgsFeature(layer.fields())
+        feature.setAttributes(['diagonal lot'])
+        feature.setGeometry(QgsGeometry.fromWkt('POLYGON ((0 0, 4 4, 3 5, -1 1, 0 0))'))
+        layer.dataProvider().addFeatures([feature])
+        fid = next(layer.getFeatures()).id()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([fid])
+        panel = self.wait_for_lot_preview(dialog, [fid], [])
+        panel.label_field.setCurrentIndex(panel.label_field.findData('name'))
+        item = panel.label_items[fid]
+        self.assertAlmostEqual(item.rotation(), -45, delta=1)
+        self.assertFalse(item.text_path.isEmpty())
+        from qgis.PyQt.QtGui import QColor, QImage, QPainter
+        image = QImage(int(item.box.width()) + 2, int(item.box.height()) + 2, QImage.Format_ARGB32)
+        image.fill(QColor('#dddddd'))
+        painter = QPainter(image)
+        item.paint(painter, None)
+        painter.end()
+        dark_pixels = sum(1 for x in range(image.width()) for y in range(image.height())
+                          if max(image.pixelColor(x, y).red(), image.pixelColor(x, y).green(),
+                                 image.pixelColor(x, y).blue()) < 150)
+        reference = QImage(image.size(), QImage.Format_ARGB32)
+        reference.fill(QColor('#dddddd'))
+        painter = QPainter(reference)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillPath(item.text_path, QColor('#174d37'))
+        painter.end()
+        reference_dark = sum(1 for x in range(reference.width()) for y in range(reference.height())
+                             if max(reference.pixelColor(x, y).red(), reference.pixelColor(x, y).green(),
+                                    reference.pixelColor(x, y).blue()) < 150)
+        self.assertGreater(dark_pixels, reference_dark * .8,
+                           'Label text must remain visible inside its white buffer')
+
+    def test_lot_preview_drag_pans_without_selecting(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        before = panel.canvas.extent().center()
+        viewport = panel.canvas.viewport()
+        start = viewport.rect().center()
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(viewport, start + QPoint(40, 20), delay=20)
+        QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=start + QPoint(40, 20))
+        QgsApplication.processEvents()
+        self.assertNotEqual(panel.canvas.extent().center(), before)
+        self.assertEqual(set(layer.selectedFeatureIds()), {ids['first']})
+        layer.removeSelection()
+        self.assertIsNone(dialog.nearby_preview_dialog)
+        self.assertEqual(set(dialog.result_ids), set(ids.values()))
+
+    def test_lot_preview_wheel_zooms(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        viewport = panel.canvas.viewport()
+        position = viewport.rect().center()
+        before = panel.canvas.extent().width()
+        event = QWheelEvent(QPointF(position), QPointF(viewport.mapToGlobal(position)),
+                            QPoint(), QPoint(0, 120), Qt.MouseButton.NoButton,
+                            Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+        QgsApplication.sendEvent(viewport, event)
+        QgsApplication.processEvents()
+        self.assertLess(panel.canvas.extent().width(), before)
+        self.assertEqual(set(layer.selectedFeatureIds()), {ids['first']})
+
+    def test_lot_preview_can_be_closed_and_reopened(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        panel.close_button.click()
+        self.assertFalse(dialog.btn_nearby.isChecked())
+        self.assertIsNone(dialog.nearby_preview_dialog)
+        layer.selectByIds([ids['far']])
+        deadline = time.monotonic() + 0.4
+        while time.monotonic() < deadline:
             QgsApplication.processEvents()
             time.sleep(0.01)
+        self.assertIsNone(dialog.nearby_preview_dialog)
+        dialog.btn_nearby.setChecked(True)
+        self.wait_for_lot_preview(dialog, [ids['far']], [])
+        self.assertEqual(set(dialog.result_ids), set(ids.values()))
+
+    def test_lot_preview_updates_after_geometry_changes(self):
+        layer, ids = self.make_preview_lots()
+        self.assertTrue(layer.startEditing())
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        self.assertTrue(layer.changeGeometry(ids['second'], QgsGeometry.fromWkt(
+            'POLYGON ((5 0,6 0,6 1,5 1,5 0))')))
+        self.wait_for_lot_preview(dialog, [ids['first']], [])
+
+    def test_lot_preview_works_with_selected_only_filter(self):
+        layer, ids = self.make_preview_lots()
+        dialog = self.create_dialog(layer)
+        dialog.show()
+        layer.selectByIds([ids['first']])
+        self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        dialog.selected_only_cb.setChecked(True)
         self.wait_for_results(dialog)
-        self.assertEqual(dialog.result_ids, ())
-        self.assertEqual(dialog.table.columnCount(), 1)
-        self.assertNotIn("canceled", dialog.status.text().lower())
+        self.assertEqual(set(dialog.result_ids), {ids['first']})
+        self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+        dialog.clear_filters()
+        self.wait_for_results(dialog)
+        self.assertEqual(set(dialog.result_ids), set(ids.values()))
+        self.assertEqual(set(layer.selectedFeatureIds()), {ids['first']})
+        self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
+
+    def test_closing_pending_nearby_sidebar_ignores_late_preview(self):
+        layer = QgsVectorLayer('Point?crs=EPSG:3857', 'nearby', 'memory')
+        feature = QgsFeature(layer.fields())
+        feature.setGeometry(QgsGeometry.fromWkt('POINT (0 0)'))
+        layer.dataProvider().addFeatures([feature])
+        fid = next(layer.getFeatures()).id()
+        dialog = self.create_dialog(layer)
+        layer.selectByIds([fid])
+        snapshot = self.plugin.collect_nearby_preview(SimpleNamespace(isCanceled=lambda: False),
+            QgsVectorLayerFeatureSource(layer), [fid], [])
+        callbacks, canceled = [], []
+        task = SimpleNamespace(setDependentLayers=lambda layers: None, cancel=lambda: canceled.append(True))
+        def make_task(*args, **kwargs):
+            callbacks.append(kwargs['on_finished'])
+            return task
+        with patch.object(self.plugin, 'QgsTask', SimpleNamespace(fromFunction=make_task)), \
+             patch.object(self.plugin, 'QgsApplication', SimpleNamespace(
+                 taskManager=lambda: SimpleNamespace(addTask=lambda value: None))):
+            dialog.show_nearby_preview(layer, (fid,), (), dialog.nearby_version)
+            dialog.close_nearby_preview()
+            callbacks[0](None, snapshot)
+        self.assertEqual(canceled, [True])
+        self.assertIsNone(dialog.nearby_preview_dialog)
+
+    def test_cell_edit_cancels_in_flight_nearby_before_deferred_refresh(self):
+        layer = self.make_layer(2)
+        dialog = self.create_dialog(layer)
+        dialog.edit_cb.setChecked(True)
+        canceled = []
+        dialog.nearby_task = SimpleNamespace(cancel=lambda: canceled.append(True))
+        dialog.table.item(0, 0).setText('updated')
+        self.assertEqual(canceled, [True])
+        self.assertIsNone(dialog.nearby_task)
 
     def test_empty_multi_filter_keeps_headers_and_can_be_adjusted(self):
         layer = QgsVectorLayer("None?field=area:string&field=category:string", "filters", "memory")
