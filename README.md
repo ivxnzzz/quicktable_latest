@@ -2,7 +2,7 @@
 
 Search, filter and edit vector-layer attributes in QGIS—even tables without geometry.
 
-**Development version 2.0.1** · QGIS 3.44+ (3.x) · By Iven Paul Rolloque
+**Development version 2.5** · QGIS 3.44+ (3.x) · By Iven Paul Rolloque
 
 ![QuickTable interface with attribute filters and column statistics](https://raw.githubusercontent.com/ivxnzzz/quicktable_qgis/main/docs/images/quicktable-interface.png)
 
@@ -10,12 +10,13 @@ _Sample data: Philippine PSGC boundaries from [altcoder/philippines-psgc-shapefi
 
 ## ✨ Features
 
-- **Find records:** Search all attributes, combine column filters, select multiple values and save filters.
+- **Find records:** Search all attributes, combine column conditions, and select multiple values within a filter.
+- **Save views:** Save and restore searches, column filters, sorting, and visible columns for a layer.
 - **Organize tables:** Sort, hide, resize and wrap columns; customize numeric display and browse by page.
 - **Preview features:** See selected and nearby features on an interactive map, search within a chosen distance, and label features using a layer field.
 - **Work with selections:** Keep table and QGIS selections in sync and jump to a feature's table row from the preview.
-- **Explore and clean data:** Save views and preview find-and-replace edits.
-- **Edit attributes:** Update cells, bulk edit, autofill, manage fields and delete features with undo/redo.
+- **Explore and clean data:** Preview case-sensitive or case-insensitive find-and-replace edits across writable text fields.
+- **Edit attributes:** Update cells, bulk edit, autofill values or number sequences, manage fields and delete features with undo/redo.
 - **Inspect and export:** View statistics across filtered results, copy rows and export CSV in the background.
 - **Make it yours:** Choose light/dark themes, fonts, text size and window pinning.
 
@@ -27,7 +28,7 @@ _Sample data: Philippine PSGC boundaries from [altcoder/philippines-psgc-shapefi
 2. In **All**, search for **QuickTable**.
 3. Select it and click **Install Plugin**. If already installed, use **Upgrade Plugin** when available.
 
-Prefer a ZIP? Build the package below, choose **Install from ZIP** and select `quicktable_latest-2.0.1.zip`.
+Prefer a ZIP? Build the package below, choose **Install from ZIP** and select `quicktable_latest-2.5.zip`.
 
 Restart QGIS after updating.
 
@@ -39,7 +40,23 @@ Requires QGIS **3.44 or later in the 3.x series**. No extra Python packages are 
 2. Type in **Search all attributes**, or click beneath a column name to filter. Click the name to sort.
 3. Select rows to select features in QGIS. Use **Selected only** to narrow the view.
 4. Enable **Edit mode** to change writable cells, or use **Bulk edit** and **Autofill**. Choose **Save edits** to commit.
-5. Turn on **Statistics**, copy rows, or **Export CSV** for selected rows, the current page or all filtered results.
+5. Turn on **Statistics**, copy rows from the current page, or use **Export CSV** to export selected rows, the current page or all filtered results.
+
+### Filters and saved views
+
+Click the filter area beneath a column heading to choose a condition: **Equals**, **Contains**, **Greater than**, **Less than**, **Between**, **Is empty**, or **Is not empty**. For **Equals**, check several values to match any of them. Filters on different columns are combined, and the search box narrows the results further. Search and contains filters match literal text, including `%` and `_`.
+
+Use **Saved filters** to save and restore the search, column filters, sort order, and hidden columns for the current layer. The same column menu offers text wrapping and numeric display formats; formatting changes the display only, not the stored values.
+
+### Editing and data cleanup
+
+Enable **Edit mode** on a writable layer, then double-click a cell. **Bulk edit** changes one field for selected rows on the current page. **Autofill** works on selected rows or the current page and can set one value, generate a number sequence, repeat a list of values, or set NULL. Both tools show a preview before applying changes.
+
+**Find and replace** searches one or all writable text columns. Choose selected rows on the current page, all filtered results, or the entire layer; review the automatic preview before applying. Edits remain undoable until saved. Field management and feature deletion are also available when supported by the layer.
+
+### Statistics and export
+
+Enable **Statistics** to summarize visible columns across all filtered results, rather than just the current page. Copy uses selected rows on the current page, or the whole page when no rows are selected. **Export CSV** offers selected rows on the current page, the current page, or all filtered results. Both use visible columns and protect spreadsheet cells from formula-like text; NULL and empty text export as blank cells.
 
 ### Features Preview
 
@@ -56,10 +73,7 @@ Distance searches require a valid layer coordinate system. Geographic layers use
 
 - **NULL and blank text differ:** Right-click a writable cell to set NULL or empty text. Spaces are preserved.
 - **Discard edits affects the whole layer**, including pending edits made elsewhere in QGIS.
-- Search matches literal text; `%` and `_` are ordinary characters.
 - Large result sets stay paginated. Export all matches directly through **Export CSV**.
-- CSV uses visible columns and protects against spreadsheet formulas. NULL and empty text both export as blank cells.
-- Find and replace works on one or all writable text fields, across selected rows, filtered results, or the entire layer. Preview changes before applying; they remain undoable until saved.
 
 ## 🛠️ Development
 
@@ -77,7 +91,7 @@ the live database test. Local runs keep it available: configure
 `QUICKTABLE_TEST_POSTGIS_URI` and set `QUICKTABLE_REQUIRE_POSTGIS=1` to require
 PostGIS verification against a disposable database.
 
-The build creates `dist/quicktable_latest-2.0.1.zip`. See the [remediation guide](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/remediation-guide.md) and [performance notes](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/performance.md) for validation details and limits.
+The build creates `dist/quicktable_latest-2.5.zip`. See the [remediation guide](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/remediation-guide.md) and [performance notes](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/performance.md) for validation details and limits.
 
 Automated checks have been run on **Windows with QGIS 3.44.12**. Linux and macOS remain unverified.
 
