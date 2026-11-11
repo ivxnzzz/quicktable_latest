@@ -815,6 +815,16 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
                 return 'deleted'
 
         layer = dialog.current_layer()
+        manager = QgsApplication.taskManager()
+        pool = manager.threadPool()
+        tasks = []
+        for task in manager.tasks():
+            try:
+                state = task_state(task)
+                tasks.append({'description': task.description(),
+                              'state': state})
+            except RuntimeError:
+                tasks.append({'description': 'deleted'})
         details = {
             'panel': type(dialog.nearby_preview_dialog).__name__,
             'enabled': dialog.nearby_enabled,
@@ -827,6 +837,9 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
             'map_selection': layer.selectedFeatureIds() if layer else None,
             'expected_origins': selected,
             'expected_matches': touching,
+            'worker_count': pool.activeThreadCount(),
+            'worker_limit': pool.maxThreadCount(),
+            'manager_tasks': tasks,
         }
         self.fail('Automatic lot preview did not update: {} | {}'.format(dialog.status.text(), details))
 
