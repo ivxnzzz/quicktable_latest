@@ -3,7 +3,7 @@
 import re
 
 from qgis.PyQt.QtCore import QDate, QDateTime, QTime, QMetaType, Qt
-from qgis.core import NULL, QgsFieldConstraints, QgsVectorLayerUtils
+from qgis.core import NULL, QgsExpression, QgsFeature, QgsFeatureRequest, QgsFieldConstraints, QgsVectorLayerUtils
 
 from .filter_utils import checked_float
 
@@ -61,8 +61,37 @@ def attribute_text(value):
     return str(value)
 
 
-def validate_change(layer, fid, index, value):
-    feature = layer.getFeature(fid)
+def _needs_geometry_for_validation(layer):
+    if not layer.isSpatial():
+        return False
+    for field in layer.fields():
+        constraints = field.constraints()
+        if (constraints.constraintStrength(QgsFieldConstraints.Constraint.ConstraintExpression)
+                != QgsFieldConstraints.ConstraintStrength.ConstraintStrengthHard):
+            continue
+        expr = constraints.constraintExpression()
+        if expr and QgsExpression(expr).needsGeometry():
+            return True
+    return False
+
+
+def validation_request(layer, fids):
+    """Build a batched feature request omitting geometry unless a hard constraint expression needs it."""
+    request = QgsFeatureRequest().setFilterFids(list(fids))
+    if not _needs_geometry_for_validation(layer):
+        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+    return request
+
+
+def validate_change(layer, fid, index, value, feature=None):
+    if feature is None:
+        features = layer.getFeatures(validation_request(layer, [fid]))
+        try:
+            feature = next(features, QgsFeature())
+        finally:
+            features.close()
+    else:
+        feature = QgsFeature(feature)
     if not feature.isValid():
         raise ValueError("Feature {} is no longer available".format(fid))
     feature.setAttribute(index, value)
@@ -82,8 +111,13 @@ def validate_pending_changes(layer):
     buffer = layer.editBuffer()
     if buffer is None:
         return
-    ids = set(buffer.changedAttributeValues()) | set(buffer.addedFeatures())
-    for fid in ids:
-        feature = layer.getFeature(fid)
-        if feature.isValid():
-            _validate_feature(layer, feature)
+    ids = list(set(buffer.changedAttributeValues()) | set(buffer.addedFeatures()))
+    if not ids:
+        return
+    features = layer.getFeatures(validation_request(layer, ids))
+    try:
+        for feature in features:
+            if feature.isValid():
+                _validate_feature(layer, feature)
+    finally:
+        features.close()

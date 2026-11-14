@@ -149,16 +149,23 @@ class ValuePopup(QFrame):
         combo.model().rowsInserted.connect(self.schedule_refresh)
 
     def schedule_refresh(self, *args):
-        self.refresh_timer.start(0)
+        if self.isVisible():
+            self.refresh_timer.start(25)
 
     def refresh_choices(self):
         blocked = self.list.blockSignals(True)
+        self.list.setUpdatesEnabled(False)
         try:
-            values = [None] + [self.combo.itemText(i) for i in range(1, self.combo.count())]
-            values += self.combo.selected_values
+            selected = list(self.combo.selected_values)
+            selected_set = set(selected)
+            values = [None] + [self.combo.itemText(i) for i in range(1, self.combo.count())] + selected
             available = set(values)
-            for value in list(self.items):
-                if value not in available:
+            stale = [value for value in self.items if value not in available]
+            if stale and len(stale) > len(self.items) // 2:
+                self.list.clear()
+                self.items.clear()
+            else:
+                for value in stale:
                     item = self.items.pop(value)
                     self.list.takeItem(self.list.row(item))
             for value in values:
@@ -169,27 +176,48 @@ class ValuePopup(QFrame):
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     self.items[value] = item
             for value, item in self.items.items():
-                checked = not self.combo.selected_values if value is None else value in self.combo.selected_values
-                item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+                checked = not selected_set if value is None else value in selected_set
+                state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+                if item.checkState() != state:
+                    item.setCheckState(state)
         finally:
+            self.list.setUpdatesEnabled(True)
             self.list.blockSignals(blocked)
         self.filter_items()
         self.count.setText("{} checked — matches any (OR)".format(len(self.combo.selected_values)))
 
     def filter_items(self, *args):
-        text = self.search.text().casefold()
-        for value, item in self.items.items():
-            item.setHidden(value is not None and text not in item.text().casefold())
-        self.use_typed.setVisible(bool(self.search.text()) and self.search.text() not in self.items)
+        search_text = self.search.text()
+        text = search_text.casefold()
+        self.list.setUpdatesEnabled(False)
+        try:
+            for value, item in self.items.items():
+                item.setHidden(value is not None and text not in item.text().casefold())
+        finally:
+            self.list.setUpdatesEnabled(True)
+        self.use_typed.setVisible(bool(search_text) and search_text not in self.items)
 
     def item_changed(self, item):
-        if item.data(Qt.ItemDataRole.UserRole) is None:
+        clicked_value = item.data(Qt.ItemDataRole.UserRole)
+        if clicked_value is None:
             values = []
+        elif item.checkState() == Qt.CheckState.Checked:
+            values = list(self.combo.selected_values) + [clicked_value]
         else:
-            values = [value for value, choice in self.items.items()
-                      if value is not None and choice.checkState() == Qt.CheckState.Checked]
+            values = [v for v in self.combo.selected_values if v != clicked_value]
         self.combo.set_selected_values(values)
-        self.refresh_choices()
+        blocked = self.list.blockSignals(True)
+        try:
+            all_item = self.items.get(None)
+            if all_item is not None:
+                all_item.setCheckState(Qt.CheckState.Checked if not values else Qt.CheckState.Unchecked)
+            if clicked_value is None:
+                for value, choice in self.items.items():
+                    if value is not None and choice.checkState() == Qt.CheckState.Checked:
+                        choice.setCheckState(Qt.CheckState.Unchecked)
+        finally:
+            self.list.blockSignals(blocked)
+        self.count.setText("{} checked — matches any (OR)".format(len(self.combo.selected_values)))
 
     def add_typed_value(self):
         text = self.search.text()

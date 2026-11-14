@@ -56,6 +56,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         errors = []
@@ -81,6 +82,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         ids = {f['name']: f.id() for f in layer.getFeatures()}
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['origin']])
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -730,7 +732,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         dialog = self.create_dialog(layer)
         ids = [feature.id() for feature in layer.getFeatures()]
         layer.selectByIds(ids[:2])
-        dialog.selected_only_cb.setChecked(True)
+        dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("selected"))
         self.wait_for_results(dialog)
         self.assertEqual(set(dialog.result_ids), set(ids[:2]))
         layer.selectByIds(ids[2:])
@@ -745,7 +747,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         dialog.run_search()
         self.wait_for_results(dialog)
         self.assertEqual(dialog.result_ids, ())
-        dialog.selected_only_cb.setChecked(False)
+        dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("all"))
         self.wait_for_results(dialog)
         self.assertEqual(len(dialog.result_ids), 4)
 
@@ -759,13 +761,13 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         row.widget.hide()
         row.value.set_selected_values(["1"])
         dialog.edit.setText("1")
-        dialog.selected_only_cb.setChecked(True)
+        dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("selected"))
         self.wait_for_results(dialog)
         dialog.btn_clear_filters.click()
         self.wait_for_results(dialog)
         self.assertEqual(dialog.edit.text(), "")
         self.assertEqual(dialog.filter_rows, [])
-        self.assertFalse(dialog.selected_only_cb.isChecked())
+        self.assertEqual(dialog.current_scope(), "all")
         self.assertIsNone(dialog.selected_scope_ids)
         self.assertEqual(len(dialog.result_ids), 4)
         self.assertEqual(set(layer.selectedFeatureIds()), {ids[1]})
@@ -802,6 +804,8 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         while time.monotonic() < deadline:
             QgsApplication.processEvents()
             if (isinstance(dialog.nearby_preview_dialog, self.plugin.NearbyPreviewPanel)
+                    and not dialog.nearby_update_timer.isActive()
+                    and dialog.nearby_task is None
                     and set(dialog.nearby_origin_ids or ()) == set(selected)
                     and set(dialog.nearby_match_ids or ()) == set(touching)):
                 return dialog.nearby_preview_dialog
@@ -831,7 +835,6 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
             'timer_active': dialog.nearby_update_timer.isActive(),
             'version': dialog.nearby_version,
             'nearby_task': task_state(dialog.nearby_task),
-            'snapshot_task': task_state(dialog.nearby_preview_task),
             'origins': dialog.nearby_origin_ids,
             'matches': dialog.nearby_match_ids,
             'map_selection': layer.selectedFeatureIds() if layer else None,
@@ -847,6 +850,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         layer.selectByIds([ids['second']])
@@ -857,6 +861,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         deadline = time.monotonic() + 10
         while dialog.nearby_preview_dialog is None and time.monotonic() < deadline:
             QgsApplication.processEvents()
@@ -889,52 +894,11 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
             time.sleep(0.01)
         self.assertIn('Select a feature', dialog.nearby_preview_dialog.message.text())
 
-    def test_preview_range_finds_nearby_features_in_selected_units(self):
-        from qgis.core import Qgis
-        layer = QgsVectorLayer('Polygon?crs=EPSG:3857&field=name:string', 'lots', 'memory')
-        for name, x in (('origin', 0), ('near', 2), ('far', 10)):
-            feature = QgsFeature(layer.fields())
-            feature.setAttributes([name])
-            feature.setGeometry(QgsGeometry.fromWkt(
-                'POLYGON (({0} 0,{1} 0,{1} 1,{0} 1,{0} 0))'.format(x, x + 1)))
-            layer.dataProvider().addFeatures([feature])
-        ids = {f['name']: f.id() for f in layer.getFeatures()}
-        dialog = self.create_dialog(layer)
-        dialog.show()
-        layer.selectByIds([ids['origin']])
-        panel = self.wait_for_lot_preview(dialog, [ids['origin']], [])
-        panel.distance_value.setValue(40)
-        panel.distance_units.setCurrentIndex(panel.distance_units.findData(Qgis.DistanceUnit.Inches))
-        panel.apply_distance.click()
-        panel = self.wait_for_lot_preview(dialog, [ids['origin']], [ids['near']])
-        self.assertAlmostEqual(panel.distance_value.value(), 40)
-        self.assertEqual(panel.distance_units.currentData(), Qgis.DistanceUnit.Inches)
-        self.assertEqual(set(dialog.result_ids), set(ids.values()))
-        panel.distance_value.setValue(0)
-        panel.apply_distance.click()
-        self.wait_for_lot_preview(dialog, [ids['origin']], [])
-
-    def test_preview_range_measures_geographic_layers_in_metres(self):
-        layer = QgsVectorLayer('Point?crs=EPSG:4326&field=name:string', 'points', 'memory')
-        for name, x in (('origin', 121), ('near', 121.00001), ('far', 121.001)):
-            feature = QgsFeature(layer.fields())
-            feature.setAttributes([name])
-            feature.setGeometry(QgsGeometry.fromWkt('POINT ({} 14)'.format(x)))
-            layer.dataProvider().addFeatures([feature])
-        ids = {f['name']: f.id() for f in layer.getFeatures()}
-        dialog = self.create_dialog(layer)
-        dialog.show()
-        layer.selectByIds([ids['origin']])
-        panel = self.wait_for_lot_preview(dialog, [ids['origin']], [])
-        panel.distance_value.setValue(2)
-        panel.apply_distance.click()
-        self.wait_for_lot_preview(dialog, [ids['origin']], [ids['near']])
-        self.assertEqual(set(dialog.result_ids), set(ids.values()))
-
     def test_lot_preview_click_selects_touching_feature(self):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         point = panel.canvas.getCoordinateTransform().transform(1.5, 0.5)
@@ -955,6 +919,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         ids = [f.id() for f in layer.getFeatures()]
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         dialog.page_size.setCurrentIndex(dialog.page_size.findData(100))
         self.wait_for_results(dialog)
         layer.selectByIds([ids[99]])
@@ -971,6 +936,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         dialog.edit.setText('first')
         dialog.run_search()
         self.wait_for_results(dialog)
@@ -987,8 +953,9 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
-        dialog.selected_only_cb.setChecked(True)
+        dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("selected"))
         self.wait_for_results(dialog)
         panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         point = panel.canvas.getCoordinateTransform().transform(1.5, 0.5)
@@ -1007,6 +974,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         dialog.nearby_splitter.setSizes([500, 450])
@@ -1031,6 +999,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first'], ids['far']])
         panel = self.wait_for_lot_preview(dialog, [ids['first'], ids['far']], [ids['second']])
         self.assertAlmostEqual(panel.canvas.extent().center().x(), 10.5, places=5)
@@ -1040,6 +1009,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         panel.label_field.setCurrentIndex(panel.label_field.findData('name'))
@@ -1075,6 +1045,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         fid = next(layer.getFeatures()).id()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([fid])
         panel = self.wait_for_lot_preview(dialog, [fid], [])
         panel.label_field.setCurrentIndex(panel.label_field.findData('name'))
@@ -1106,6 +1077,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         before = panel.canvas.extent().center()
@@ -1125,6 +1097,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         viewport = panel.canvas.viewport()
@@ -1142,6 +1115,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         panel = self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         panel.close_button.click()
@@ -1162,6 +1136,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         self.assertTrue(layer.startEditing())
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
         self.assertTrue(layer.changeGeometry(ids['second'], QgsGeometry.fromWkt(
@@ -1172,9 +1147,10 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         layer, ids = self.make_preview_lots()
         dialog = self.create_dialog(layer)
         dialog.show()
+        dialog.btn_nearby.setChecked(True)
         layer.selectByIds([ids['first']])
         self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
-        dialog.selected_only_cb.setChecked(True)
+        dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("selected"))
         self.wait_for_results(dialog)
         self.assertEqual(set(dialog.result_ids), {ids['first']})
         self.wait_for_lot_preview(dialog, [ids['first']], [ids['second']])
@@ -1202,10 +1178,13 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         with patch.object(self.plugin, 'QgsTask', SimpleNamespace(fromFunction=make_task)), \
              patch.object(self.plugin, 'QgsApplication', SimpleNamespace(
                  taskManager=lambda: SimpleNamespace(addTask=lambda value: None))):
-            dialog.show_nearby_preview(layer, (fid,), (), dialog.nearby_version)
-            dialog.close_nearby_preview()
-            callbacks[0](None, snapshot)
+            dialog.btn_nearby.setChecked(True)
+            dialog.nearby_update_timer.stop()
+            dialog.start_nearby_preview()
+            dialog.hide_nearby_preview()
+            callbacks[0](None, ((), False, snapshot))
         self.assertEqual(canceled, [True])
+        self.assertIsNone(dialog.nearby_task)
         self.assertIsNone(dialog.nearby_preview_dialog)
 
     def test_cell_edit_cancels_in_flight_nearby_before_deferred_refresh(self):
@@ -1260,6 +1239,11 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         barangay.widget.hide()
         barangay.value.set_selected_values(["A"])
         dialog.refresh_dependent_values()
+        # Closed filter popups defer value reloads until they are opened.
+        self.assertIn(id(section), dialog._stale_value_rows)
+        self.assertFalse(dialog.value_tasks)
+        dialog.show_filter_popup(section)
+        section.widget.hide()
         deadline = time.monotonic() + 10
         while dialog.value_tasks and time.monotonic() < deadline:
             QgsApplication.processEvents()
@@ -1271,6 +1255,10 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         self.assertNotIn("4", section.choices.items)
         barangay.value.set_selected_values(["B"])
         dialog.refresh_dependent_values()
+        self.assertIn(id(section), dialog._stale_value_rows)
+        self.assertFalse(dialog.value_tasks)
+        dialog.show_filter_popup(section)
+        section.widget.hide()
         deadline = time.monotonic() + 10
         while dialog.value_tasks and time.monotonic() < deadline:
             QgsApplication.processEvents()
@@ -1591,7 +1579,7 @@ class QgisIntegrationTests(PriorityChecks, ProviderChecks, unittest.TestCase):
         self.assertEqual(dialog.statistics_strip.summaries[0][2], 15.0)
         ids = dialog.all_fids()
         layer.selectByIds(ids[:2])
-        dialog.selected_only_cb.setChecked(True)
+        dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("selected"))
         self.wait_for_results(dialog)
         self.wait_for_statistics(dialog)
         self.assertEqual(dialog.statistics_strip.summaries[0][0], 2)

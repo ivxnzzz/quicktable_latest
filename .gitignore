@@ -18,3 +18,6 @@ htmlcov/
 /.codex/agents/
 /skills-lock.json
 /docs/superpowers/
+
+# Local QGIS style database created during headless runs
+/symbology-style.db

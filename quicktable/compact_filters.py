@@ -204,6 +204,8 @@ class ColumnTextDelegate(QStyledItemDelegate):
         self.field_kind = "text"
         self.value_map = []
         self.number_format = "original"
+        self._size_document = QTextDocument()
+        self._size_document.setDocumentMargin(0)
 
     def displayText(self, value, locale):
         text = super().displayText(value, locale)
@@ -307,8 +309,7 @@ class ColumnTextDelegate(QStyledItemDelegate):
             return size
         styled = QStyleOptionViewItem(option)
         self.initStyleOption(styled, index)
-        document = QTextDocument()
-        document.setDocumentMargin(0)
+        document = self._size_document
         document.setDefaultFont(styled.font)
         text_option = QTextOption()
         text_option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)

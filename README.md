@@ -2,7 +2,7 @@
 
 Search, filter and edit vector-layer attributes in QGIS—even tables without geometry.
 
-**Development version 2.5** · QGIS 3.44+ (3.x) · By Iven Paul Rolloque
+**Development version 2.6** · QGIS 3.44+ (3.x) · By Iven Paul Rolloque
 
 ![QuickTable interface with attribute filters and column statistics](https://raw.githubusercontent.com/ivxnzzz/quicktable_qgis/main/docs/images/quicktable-interface.png)
 
@@ -13,7 +13,7 @@ _Sample data: Philippine PSGC boundaries from [altcoder/philippines-psgc-shapefi
 - **Find records:** Search all attributes, combine column conditions, and select multiple values within a filter.
 - **Save views:** Save and restore searches, column filters, sorting, and visible columns for a layer.
 - **Organize tables:** Sort, hide, resize and wrap columns; customize numeric display and browse by page.
-- **Preview features:** See selected and nearby features on an interactive map, search within a chosen distance, and label features using a layer field.
+- **Preview features:** See selected and nearby features on an interactive map, inspect touching features, and label features using a layer field.
 - **Work with selections:** Keep table and QGIS selections in sync and jump to a feature's table row from the preview.
 - **Explore and clean data:** Preview case-sensitive or case-insensitive find-and-replace edits across writable text fields.
 - **Edit attributes:** Update cells, bulk edit, autofill values or number sequences, manage fields and delete features with undo/redo.
@@ -28,7 +28,7 @@ _Sample data: Philippine PSGC boundaries from [altcoder/philippines-psgc-shapefi
 2. In **All**, search for **QuickTable**.
 3. Select it and click **Install Plugin**. If already installed, use **Upgrade Plugin** when available.
 
-Prefer a ZIP? Build the package below, choose **Install from ZIP** and select `quicktable_latest-2.5.zip`.
+Prefer a ZIP? Build the package below, choose **Install from ZIP** and select `quicktable_latest-2.6.zip`.
 
 Restart QGIS after updating.
 
@@ -36,9 +36,9 @@ Requires QGIS **3.44 or later in the 3.x series**. No extra Python packages are 
 
 ## 🚀 Quick start
 
-1. Open **QuickTable** from the Plugins menu or toolbar and choose a vector layer.
+1. Open **QuickTable** from the Plugins menu or toolbar (or use the toolbar dropdown arrow / **Plugins → QuickTable** items: *Open All Features*, *Open Selected Features*, *Open Visible on Map*, *Open Edited and New*), then choose a vector layer.
 2. Type in **Search all attributes**, or click beneath a column name to filter. Click the name to sort.
-3. Select rows to select features in QGIS. Use **Selected only** to narrow the view.
+3. Select rows to select features in QGIS and click **Zoom to selected** whenever you want to zoom the map to them. Use the **Scope** selector to narrow the view to **All features**, **Selected features**, **Visible on map**, or **Edited and new**.
 4. Enable **Edit mode** to change writable cells, or use **Bulk edit** and **Autofill**. Choose **Save edits** to commit.
 5. Turn on **Statistics**, copy rows from the current page, or use **Export CSV** to export selected rows, the current page or all filtered results.
 
@@ -60,14 +60,13 @@ Enable **Statistics** to summarize visible columns across all filtered results, 
 
 ### Features Preview
 
-With **Features Preview** enabled, select a feature in the table or QGIS to show it in green alongside nearby features in gray. When nothing is selected, the sidebar asks you to select a feature. The preview does not filter the table.
+With **Features Preview** enabled, select a feature in the table or QGIS to show it in green alongside touching features in gray (or dashed amber when outside the current table or visible map). When nothing is selected, the sidebar asks you to select a feature. The preview does not filter the table.
 
-- **Choose a range:** The default, **Touching**, shows features that touch the selection. To search farther, enter a distance, select metres, kilometres, centimetres, inches, feet, yards or miles, and click **Apply**. Distances are measured between feature geometries.
-- **Navigate:** Drag to pan and use the mouse wheel to zoom. The map centers on a new selection while retaining its zoom level. Click a displayed feature to select it and bring its row into view, including on another page. Active table filters still apply.
-- **Show labels:** Under **Labels**, choose a field such as a lot number. Labels appear on selected and nearby features and follow each feature's shape.
+- **Navigate:** Drag to pan and use the mouse wheel to zoom. The map centers on a new selection while retaining its zoom level. Click a displayed feature to select it and bring its row into view, including on another page. Active table filters still apply, and **Visible on map** limits preview clicks to features currently in that view.
+- **Show labels:** Under **Labels**, choose a field such as a lot number. Labels appear on selected and touching features and follow each feature's shape.
 - **Hide or reopen:** Click **Close** on the sidebar, or use the **Features Preview** toolbar button.
 
-Distance searches require a valid layer coordinate system. Geographic layers use a local metric projection, so their distances are approximate. Large selections and nearby results are sampled in the preview.
+Previews stop after 100+ touching features or 50,000 checked candidates and keep the table unchanged.
 
 ### 💡 Keep in mind
 
@@ -91,9 +90,54 @@ the live database test. Local runs keep it available: configure
 `QUICKTABLE_TEST_POSTGIS_URI` and set `QUICKTABLE_REQUIRE_POSTGIS=1` to require
 PostGIS verification against a disposable database.
 
-The build creates `dist/quicktable_latest-2.5.zip`. See the [remediation guide](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/remediation-guide.md) and [performance notes](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/performance.md) for validation details and limits.
+The build creates `dist/quicktable_latest-2.6.zip`. See the [remediation guide](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/remediation-guide.md) and [performance notes](https://github.com/ivxnzzz/quicktable_qgis/blob/main/docs/performance.md) for validation details and limits.
 
 Automated checks have been run on **Windows with QGIS 3.44.12**. Linux and macOS remain unverified.
+
+### Folder structure
+
+```text
+quicktable_qgis/
+├── __init__.py                  # QGIS plugin classFactory entry point
+├── metadata.txt                 # QGIS plugin metadata and changelog
+├── README.md                    # Documentation
+├── LICENSE                      # GNU GPL v2 or later
+├── quicktable/                  # Plugin implementation modules
+│   ├── __init__.py
+│   ├── layer_filter.py          # Plugin orchestration, toolbar scopes, and main dialog UI
+│   ├── compact_filters.py       # Column-header controls and cell text presentation
+│   ├── filter_widgets.py        # Multi-select checkable Equals dropdown popup
+│   ├── filter_logic.py          # Filter expression builder (Qt/QGIS independent)
+│   ├── filter_utils.py          # Numeric conversions and spreadsheet serialization
+│   ├── editing.py               # Typed attribute conversion and layer-constraint validation
+│   ├── data_analysis.py         # Literal text replacement helpers
+│   ├── numeric_statistics.py    # Exact integer and bounded-memory Decimal totals
+│   ├── pagination.py            # Page boundary calculations
+│   ├── preview_panel.py         # Interactive Features Preview sidebar and map-anchored labels
+│   ├── table_actions.py         # Schema management and batch editing actions
+│   ├── dialogs.py               # Settings, field, bulk edit, find/replace, and autofill dialogs
+│   ├── tasks.py                 # Background QgsTask workers (query, stats, nearby, replace)
+│   ├── exporting.py             # Background CSV snapshot exporter
+│   └── themes.py                # Light/dark themes, stylesheets, and SVG/PNG icon helpers
+├── icons/                       # Toolbar PNG and theme-aware SVG UI icons
+├── docs/
+│   ├── performance.md           # Benchmarks, controls, and scale limits
+│   ├── remediation-guide.md     # Validation and hardening notes
+│   └── images/                  # Documentation screenshots
+├── tests/
+│   ├── run_qgis_tests.py        # Offscreen QGIS test runner
+│   ├── test_qgis_integration.py # End-to-end UI and workflow integration tests
+│   ├── priority_checks.py       # Regression checks for core features
+│   ├── provider_checks.py       # Disk-provider and opt-in PostGIS tests
+│   └── test_*.py                # Pure-Python unit tests
+├── tools/
+│   ├── package_plugin.py        # Build and verify quicktable_latest-<version>.zip
+│   ├── smoke_package.py         # Isolated ZIP load, query, render, and unload smoke check
+│   └── benchmark_plugin.py      # Standalone local QGIS benchmark script
+├── dist/                        # Built plugin ZIP archives
+└── .github/workflows/
+    └── verify.yml               # Automated CI test and package workflow
+```
 
 ## 💬 Support & license
 

@@ -1,1621 +1,134 @@
-import os
 import re
 import hashlib
 import json
-import math
-from array import array
-from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
+from . import table_actions
 from .filter_utils import clipboard_text
-from .data_analysis import replace_text
-from .editing import convert_attribute, attribute_text, validate_change, validate_pending_changes
-from .numeric_statistics import NumericTotal
+from .editing import (convert_attribute, attribute_text, validate_change,
+                      validate_pending_changes, validation_request)
 from .exporting import export_csv_task
 from .filter_logic import FILTER_OPERATORS, field_filter
 from .filter_widgets import CheckableValueCombo, ValuePopup
 from .compact_filters import FilterHeader, ColumnTextDelegate, StatisticsStrip, NULL_ROLE
 from .pagination import PAGE_SIZES, normalize_page_size, page_window
+from .themes import (
+    ICONS_DIR,
+    THEMES,
+    _fill,
+    build_css,
+    dark_palette,
+    plugin_icon,
+    scope_launch_icon,
+    style_combo_popup,
+    toolbar_icon,
+)
+from .tasks import (
+    MAX_NEARBY_CANDIDATES,
+    MAX_NEARBY_PREVIEW,
+    MAX_STAT_DISTINCT,
+    MAX_VALUE_FEATURES,
+    STAT_HISTOGRAM_BINS,
+    collect_column_statistics as _collect_column_statistics,
+    collect_feature_ids,
+    collect_feature_ids_task,
+    collect_nearby,
+    collect_nearby_preview,
+    collect_nearby_task,
+    collect_values,
+    field_kind,
+    replace_columns_snapshot,
+    replace_feature_snapshot,
+    replace_suggestions,
+)
+from .dialogs import (
+    AddFieldDialog,
+    AutofillDialog,
+    BulkEditDialog,
+    DeleteFieldsDialog,
+    FindReplaceDialog,
+    FontPreviewDelegate,
+    SettingsDialog,
+)
+from .preview_panel import (
+    EmptyPreviewPanel,
+    NearbyPreviewPanel,
+    PreviewLabel,
+    PreviewPanSelectTool,
+    preview_label_angle,
+)
 
 from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                                  QComboBox, QLineEdit, QTableWidget,
-                                 QTableWidgetItem, QLabel, QPushButton,
+                                 QTableWidgetItem, QLabel, QPushButton, QToolButton,
                                  QAbstractItemView, QAbstractButton, QFileDialog, QApplication,
-                                 QCompleter, QCheckBox, QMessageBox, QFrame,
+                                 QCheckBox, QMessageBox, QFrame,
                                  QListWidget, QListWidgetItem, QDialogButtonBox,
-                                 QFontComboBox, QSpinBox, QDoubleSpinBox, QStyledItemDelegate, QStyle,
-                                 QMenu, QInputDialog, QPlainTextEdit, QFormLayout, QGroupBox, QWidget, QSplitter)
-from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint, QRectF, QDate, QByteArray, QStringListModel,
+                                 QMenu, QInputDialog, QSplitter)
+from qgis.PyQt.QtCore import (Qt, QTimer, QSettings, QMetaType, QSize, QPoint,
                               QItemSelection, QItemSelectionModel)
-from qgis.PyQt.QtGui import QAction, QPalette, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush, QPixmap, QPainter, QPainterPath, QPen
-from qgis.PyQt.QtSvg import QSvgRenderer
-from qgis.gui import QgsMapCanvas, QgsMapCanvasItem, QgsMapToolPan, QgsRubberBand
+from qgis.PyQt.QtGui import QAction, QColor, QIcon, QFont, QFontDatabase, QFontMetrics, QBrush
 from qgis.core import (QgsProject, QgsMapLayer, QgsFeatureRequest,
                        QgsExpression, QgsApplication, QgsVectorDataProvider,
-                       QgsTask, QgsVectorLayerFeatureSource, QgsRectangle, QgsSpatialIndex, QgsUnitTypes, QgsField, QgsFields, QgsGeometry, QgsFeature, QgsCoordinateReferenceSystem, QgsCoordinateTransform, Qgis, NULL)
+                       QgsTask, QgsVectorLayerFeatureSource, QgsRectangle,
+                       QgsCoordinateTransform, QgsCsException,
+                       Qgis, NULL)
 
 NO_FIELD = "(no filter)"
 ALL_VALUES = "(all)"
-MAX_VALUE_FEATURES = 2000
-MAX_STAT_DISTINCT = 25000
 MAX_RENDER_ROWS = 10000
 MAX_RENDER_CELLS = 250000
-STAT_HISTOGRAM_BINS = 16
-ICONS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "icons")
-
-
-def plugin_icon():
-    return QIcon(os.path.join(ICONS_DIR, "icon.png"))
-
-
-TOOL_ICONS = {
-    "settings": '<circle cx="12" cy="12" r="3"/><path d="M12 2.8h1.6l.5 2.1a7.5 7.5 0 0 1 1.6.7l1.9-1.1 2.2 2.2-1.1 1.9a7.5 7.5 0 0 1 .7 1.6l2.1.5v3.2l-2.1.5a7.5 7.5 0 0 1-.7 1.6l1.1 1.9-2.2 2.2-1.9-1.1a7.5 7.5 0 0 1-1.6.7l-.5 2.1h-3.2l-.5-2.1a7.5 7.5 0 0 1-1.6-.7l-1.9 1.1-2.2-2.2 1.1-1.9a7.5 7.5 0 0 1-.7-1.6l-2.1-.5v-3.2l2.1-.5a7.5 7.5 0 0 1 .7-1.6L4.2 6.7l2.2-2.2 1.9 1.1a7.5 7.5 0 0 1 1.6-.7l.5-2.1z"/>',
-    "refresh": '<path d="M20 11a8 8 0 0 0-14-5L4 8"/><path d="M4 4v4h4M4 13a8 8 0 0 0 14 5l2-2"/><path d="M20 20v-4h-4"/>',
-    "undo": '<path d="m9 8-4 4 4 4"/><path d="M5 12h9a5 5 0 0 1 5 5"/>',
-    "redo": '<path d="m15 8 4 4-4 4"/><path d="M19 12h-9a5 5 0 0 0-5 5"/>',
-    "copy": '<rect x="8" y="8" width="11" height="12" rx="1"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h3"/>',
-    "export": '<path d="M12 3v11m-4-4 4 4 4-4M5 16v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3"/>',
-    "columns": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/>',
-    "select": '<path d="m4 4 15 6-6 2-2 6z"/>',
-    "nearby": '<path d="M19 10c0 5-7 10-7 10S5 15 5 10a7 7 0 0 1 14 0z"/><circle cx="12" cy="10" r="2"/>',
-    "save": '<path d="M5 3h12l3 3v14H4V3z"/><path d="M7 3v6h9V3M7 20v-7h10v7"/>',
-    "fields": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M11 8h7M11 12h7M11 16h7"/>',
-    "fieldAdd": '<path d="M4 5h8M4 10h8M4 15h8M17 11v8M13 15h8"/>',
-    "fieldDelete": '<path d="M4 5h8M4 10h8M4 15h8M13 15h8"/>',
-}
-
-
-def toolbar_icon(name, color):
-    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" '
-           'fill="none" stroke="{}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{}</svg>'
-           .format(color, TOOL_ICONS[name]))
-    pixmap = QPixmap(48, 48)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    QSvgRenderer(QByteArray(svg.encode("utf-8"))).render(painter)
-    painter.end()
-    pixmap.setDevicePixelRatio(2)
-    return QIcon(pixmap)
-
-
-def field_kind(field):
-    if field is None:
-        return "text"
-    return {QMetaType.Type.Int: "integer", QMetaType.Type.UInt: "integer", QMetaType.Type.LongLong: "integer",
-            QMetaType.Type.ULongLong: "integer", QMetaType.Type.Double: "number", QMetaType.Type.Bool: "boolean",
-            QMetaType.Type.QDate: "date", QMetaType.Type.QDateTime: "datetime", QMetaType.Type.QTime: "time"}.get(field.type(), "text")
-
-
-
-
-def collect_feature_ids(task, source, expression, sort_field=None, ascending=True):
-    """Find all matches off the UI thread, without retaining attributes/geometry."""
-    if task.isCanceled():
-        return None
-    request = QgsFeatureRequest()
-    request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
-    if not sort_field:
-        request.setNoAttributes()
-    else:
-        request.setSubsetOfAttributes([source.fields().indexFromName(sort_field)])
-    if expression:
-        request.setFilterExpression(expression)
-    if sort_field:
-        request.addOrderBy(QgsExpression.quotedColumnRef(sort_field), ascending)
-        request.addOrderBy('$id', True)
-    features = source.getFeatures(request)
-    ids = array('q')
-    try:
-        for feature in features:
-            if task.isCanceled():
-                return None
-            ids.append(feature.id())
-    finally:
-        features.close()
-    if task.isCanceled():
-        return None
-    if not sort_field:
-        ids = array('q', sorted(ids))
-    # Compact storage keeps large result sets from retaining one Python int per ID.
-    return ids if len(ids) > 50000 else tuple(ids)
-
-
-def collect_feature_ids_task(task, source, expression, sort_field=None, ascending=True):
-    ids = collect_feature_ids(task, source, expression, sort_field, ascending)
-    # QgsTask.fromFunction omits falsy return values from its completion callback.
-    return (ids,) if ids is not None else None
-
-
-def collect_nearby(task, source, selected_ids, distance, source_crs=None, transform_context=None):
-    """Return IDs touching or within a planar distance of the selected features."""
-    selected = set(selected_ids)
-    request = QgsFeatureRequest().setFilterFids(list(selected))
-    request.setNoAttributes()
-    features = source.getFeatures(request)
-    origins = {}
-    selected_features = []
-    geographic = distance is not None and source_crs is not None and source_crs.isGeographic()
-    bounds = None
-    try:
-        for feature in features:
-            if task.isCanceled():
-                return None
-            if not feature.hasGeometry():
-                continue
-            geometry = feature.geometry()
-            if geometry.isEmpty():
-                continue
-            selected_features.append(QgsFeature(feature))
-            rectangle = QgsRectangle(geometry.boundingBox())
-            if bounds is None:
-                bounds = rectangle
-            else:
-                bounds.combineExtentWith(rectangle)
-    finally:
-        features.close()
-    if not selected_features:
-        raise ValueError("The selected features have no usable geometry.")
-    transform = None
-    if geographic:
-        wgs84 = QgsCoordinateReferenceSystem('EPSG:4326')
-        center = QgsCoordinateTransform(source_crs, wgs84, transform_context).transform(bounds.center())
-        local_crs = QgsCoordinateReferenceSystem()
-        if not local_crs.createFromProj(
-                '+proj=aeqd +lat_0={} +lon_0={} +datum=WGS84 +units=m +no_defs'.format(center.y(), center.x())):
-            raise ValueError('Could not create a local measurement coordinate system.')
-        transform = QgsCoordinateTransform(source_crs, local_crs, transform_context)
-    spatial_index = QgsSpatialIndex()
-    bounds = None
-    for feature in selected_features:
-        geometry = feature.geometry()
-        if transform is not None:
-            geometry.transform(transform)
-            feature.setGeometry(geometry)
-        origins[feature.id()] = geometry
-        spatial_index.addFeature(feature)
-        rectangle = QgsRectangle(geometry.boundingBox())
-        if distance is not None:
-            rectangle.grow(distance)
-        if bounds is None:
-            bounds = rectangle
-        else:
-            bounds.combineExtentWith(rectangle)
-    request = QgsFeatureRequest()
-    if not geographic:
-        request.setFilterRect(bounds)
-    request.setNoAttributes()
-    features = source.getFeatures(request)
-    matches = []
-    try:
-        for feature in features:
-            if task.isCanceled():
-                return None
-            if feature.id() in selected or not feature.hasGeometry():
-                continue
-            geometry = feature.geometry()
-            if geometry.isEmpty():
-                continue
-            if transform is not None:
-                geometry.transform(transform)
-            candidate_bounds = QgsRectangle(geometry.boundingBox())
-            if distance is not None:
-                candidate_bounds.grow(distance)
-            for origin_id in spatial_index.intersects(candidate_bounds):
-                if task.isCanceled():
-                    return None
-                origin = origins[origin_id]
-                if distance is None:
-                    matched = origin.touches(geometry)
-                else:
-                    separation = origin.distance(geometry)
-                    if separation < 0:
-                        raise ValueError("Could not calculate geometry distance; check the layer geometries.")
-                    matched = separation <= distance
-                if matched:
-                    matches.append(feature.id())
-                    break
-    finally:
-        features.close()
-    return tuple(matches)
-
-
-def collect_nearby_task(task, source, selected_ids, distance, source_crs=None, transform_context=None):
-    ids = collect_nearby(task, source, selected_ids, distance, source_crs, transform_context)
-    return (ids,) if ids is not None else None
-
-
-def collect_nearby_preview(task, source, selected_ids, nearby_ids, selected_limit=100, nearby_limit=200):
-    """Copy a bounded sample of geometry as WKB for the preview canvas."""
-    result = {"selected": {}, "nearby": {}, "truncated": False}
-    remaining_bytes = 5_000_000
-    for name, ids, limit in (("selected", selected_ids, selected_limit), ("nearby", nearby_ids, nearby_limit)):
-        if task.isCanceled():
-            return None
-        if len(ids) > limit:
-            result["truncated"] = True
-        sample = list(ids[:limit])
-        if not sample:
-            continue
-        request = QgsFeatureRequest().setFilterFids(sample)
-        request.setNoAttributes()
-        iterator = source.getFeatures(request)
-        try:
-            for feature in iterator:
-                if task.isCanceled():
-                    return None
-                if not feature.hasGeometry() or feature.geometry().isEmpty():
-                    continue
-                wkb = bytes(feature.geometry().asWkb())
-                if len(wkb) > remaining_bytes:
-                    result["truncated"] = True
-                    continue
-                result[name][feature.id()] = wkb
-                remaining_bytes -= len(wkb)
-        finally:
-            iterator.close()
-    return result
-
-
-def collect_column_statistics(task, source, columns, ids):
-    """Collect exact counts and bounded category distributions for filtered IDs."""
-    summaries = {index: [0, 0, 0.0, None, None, numeric,
-                         {"distinct": 0, "capped": False, "top": [], "histogram": [],
-                          "numeric_count": 0, "nonfinite": 0}] for index, numeric in columns}
-    frequencies = {index: {} for index, numeric in columns}
-    totals = {index: NumericTotal(field_kind(source.fields()[index]) == "integer")
-              for index, numeric in columns if numeric}
-    if not ids or not columns:
-        return {"summaries": summaries}
-    request = QgsFeatureRequest().setFilterFids(list(ids))
-    request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
-    request.setSubsetOfAttributes([index for index, numeric in columns])
-    features = source.getFeatures(request)
-    try:
-        for feature in features:
-            if task.isCanceled():
-                return None
-            for index, numeric in columns:
-                value = feature[index]
-                summary = summaries[index]
-                if value is None or value == NULL:
-                    summary[1] += 1
-                    continue
-                summary[0] += 1
-                categories = frequencies[index]
-                if categories is not None:
-                    label = str(value)
-                    if label in categories:
-                        categories[label] += 1
-                    elif len(categories) < MAX_STAT_DISTINCT:
-                        categories[label] = 1
-                    else:
-                        frequencies[index] = None
-                        summary[6]["capped"] = True
-                        summary[6]["distinct"] = MAX_STAT_DISTINCT + 1
-                if numeric:
-                    try:
-                        number = int(value) if totals[index].integer else float(value)
-                    except (ValueError, TypeError, OverflowError):
-                        summary[6]["nonfinite"] += 1
-                        continue
-                    if not math.isfinite(number):
-                        summary[6]["nonfinite"] += 1
-                        continue
-                    summary[6]["numeric_count"] += 1
-                    totals[index].add(number)
-                    summary[2] = totals[index].total
-                    summary[3] = number if summary[3] is None else min(summary[3], number)
-                    summary[4] = number if summary[4] is None else max(summary[4], number)
-    finally:
-        features.close()
-    for index, numeric in columns:
-        summary = summaries[index]
-        categories = frequencies[index]
-        if categories is not None:
-            summary[6]["distinct"] = len(categories)
-            if not numeric and len(categories) <= 30:
-                summary[6]["top"] = sorted(categories.items(), key=lambda item: (-item[1], item[0].casefold()))[:2]
-        if numeric and summary[6]["numeric_count"]:
-            summary[6]["histogram"] = [0] * STAT_HISTOGRAM_BINS
-    histogram_columns = [(index, summaries[index]) for index, numeric in columns
-                         if numeric and summaries[index][6]["histogram"]]
-    if histogram_columns:
-        request.setSubsetOfAttributes([index for index, summary in histogram_columns])
-        features = source.getFeatures(request)
-        try:
-            for feature in features:
-                if task.isCanceled():
-                    return None
-                for index, summary in histogram_columns:
-                    value = feature[index]
-                    if value is None or value == NULL:
-                        continue
-                    try:
-                        number = int(value) if totals[index].integer else float(value)
-                    except (ValueError, TypeError, OverflowError):
-                        continue
-                    if not math.isfinite(number):
-                        continue
-                    low, high = summary[3], summary[4]
-                    if high > low:
-                        span = high - low
-                        ratio = ((number - low) / span if math.isfinite(span) else
-                                 (number / 2 - low / 2) / (high / 2 - low / 2))
-                    else:
-                        ratio = 0.5
-                    if not math.isfinite(ratio):
-                        ratio = 0.0 if number == low else 1.0
-                    bucket = max(0, min(STAT_HISTOGRAM_BINS - 1, int(ratio * STAT_HISTOGRAM_BINS)))
-                    summary[6]["histogram"][bucket] += 1
-        finally:
-            features.close()
-    return {"summaries": summaries}
-
-
-def replace_suggestions(task, source, ids, columns, needle, case_sensitive=False):
-    matches = set()
-    pattern = re.compile(re.escape(needle), 0 if case_sensitive else re.IGNORECASE)
-    checked = 0
-    batches = (None,) if ids is None else (ids[start:start + 1000] for start in range(0, len(ids), 1000))
-    for batch in batches:
-        if task.isCanceled():
-            return None
-        request = QgsFeatureRequest()
-        if batch is not None:
-            request.setFilterFids(list(batch))
-        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
-        request.setSubsetOfAttributes(columns)
-        iterator = source.getFeatures(request)
-        try:
-            for feature in iterator:
-                if task.isCanceled():
-                    return None
-                for column in columns:
-                    value = feature[column]
-                    if isinstance(value, str) and value and pattern.search(value):
-                        matches.add(value)
-                checked += 1
-                if checked >= MAX_VALUE_FEATURES or len(matches) >= 100:
-                    return sorted(matches, key=str.casefold)[:100]
-        finally:
-            iterator.close()
-    return sorted(matches, key=str.casefold)[:100]
-
-
-def replace_columns_snapshot(task, source, ids, columns, needle, replacement, case_sensitive):
-    if not needle:
-        raise ValueError("Enter text to find")
-    originals, changes = {}, {}
-    batches = (None,) if ids is None else (ids[start:start + 1000] for start in range(0, len(ids), 1000))
-    for batch in batches:
-        if task.isCanceled():
-            return None
-        request = QgsFeatureRequest()
-        if batch is not None:
-            request.setFilterFids(list(batch))
-        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
-        request.setSubsetOfAttributes(columns)
-        iterator = source.getFeatures(request)
-        try:
-            for feature in iterator:
-                if task.isCanceled():
-                    return None
-                fid = feature.id()
-                originals[fid] = {column: feature[column] for column in columns}
-                for column, old in originals[fid].items():
-                    if old is not None and old != NULL:
-                        new = replace_text(old, needle, replacement, case_sensitive)
-                        if new != old:
-                            changes.setdefault(fid, {})[column] = new
-        finally:
-            iterator.close()
-    if ids is not None and len(originals) != len(ids):
-        raise ValueError("Some features are no longer available")
-    return originals, changes
-
-
-def replace_feature_snapshot(task, source, ids, column, needle, replacement, case_sensitive):
-    if not needle:
-        raise ValueError("Enter text to find")
-    originals, changes = {}, {}
-    for start in range(0, len(ids), 1000):
-        if task.isCanceled():
-            return None
-        request = QgsFeatureRequest().setFilterFids(list(ids[start:start + 1000]))
-        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
-        request.setSubsetOfAttributes([column])
-        iterator = source.getFeatures(request)
-        try:
-            for feature in iterator:
-                if task.isCanceled():
-                    return None
-                old = feature[column]
-                originals[feature.id()] = old
-                if old is not None and old != NULL:
-                    new = replace_text(old, needle, replacement, case_sensitive)
-                    if new != old:
-                        changes[feature.id()] = new
-        finally:
-            iterator.close()
-    if len(originals) != len(ids):
-        raise ValueError("Some features are no longer available")
-    return originals, changes
-
-
-def collect_values(task, source, index, expression):
-    """Read a bounded set of suggestions from an independent feature source."""
-    request = QgsFeatureRequest()
-    request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
-    request.setSubsetOfAttributes([index])
-    request.setLimit(MAX_VALUE_FEATURES + 1)
-    if expression:
-        request.setFilterExpression(expression)
-    values = {}
-    truncated = False
-    features = source.getFeatures(request)
-    try:
-        for count, feature in enumerate(features):
-            if task.isCanceled():
-                return None
-            if count >= MAX_VALUE_FEATURES:
-                truncated = True
-                break
-            value = feature[index]
-            if value is not None and value != NULL:
-                values.setdefault(attribute_text(value), value)
-    finally:
-        features.close()
-    return values, truncated
+SCOPE_LAUNCH_OPTIONS = (
+    ("all", "Open All Features", "Open QuickTable showing all features"),
+    ("selected", "Open Selected Features", "Open QuickTable filtered to selected features"),
+    ("visible", "Open Visible on Map", "Open QuickTable filtered to features inside the map view"),
+    ("edited", "Open Edited and New", "Open QuickTable filtered to unsaved edits and new features"),
+)
 
 # signals of a vector layer that mean "the data or fields changed"
-LAYER_SIGNALS = ("dataChanged", "updatedFields", "editingStarted", "editingStopped",
+LAYER_SIGNALS = ("dataChanged", "updatedFields",
                  "afterCommitChanges", "attributeValueChanged",
-                 "featureAdded", "featureDeleted", "geometryChanged", "readOnlyChanged",
-                 "supportsEditingChanged")
+                 "featureAdded", "featureDeleted", "geometryChanged")
+EDIT_STATE_SIGNALS = ("editingStarted", "editingStopped",
+                      "readOnlyChanged", "supportsEditingChanged")
 
 
-THEMES = {
-    "dark": dict(
-        bg="#1f1e1d", surface="#262624", alt="#2a2927", border="#3d3d3a", border_hi="#5a5955",
-        text="#e8e6dc", text_hi="#faf9f5", text_soft="#c2c0b6", muted="#87867f",
-        accent="#73bb98", accent_hi="#88caaa", accent_press="#5aa783", accent_text="#1f1e1d",
-        sel_bg="#253c31", sel_fg="#d5efdf", sel_input="#345743", hover_bg="#2f2e2c", press_bg="#2a2927",
-        danger="#e0675e", danger_hi="#ff8a80", danger_border="#5a3a37",
-        dis_text="#5a5955", dis_border="#2e2d2b", pdis_bg="#293d32", pdis_text="#587965", ddis_text="#5a4442",
-        grid="#34332f", scroll="#3d3d3a", scroll_hi="#5a5955"),
-    "light": dict(
-        bg="#faf9f5", surface="#ffffff", alt="#f5f4ee", border="#dedcd1", border_hi="#b8b5a8",
-        text="#1f1e1d", text_hi="#000000", text_soft="#4a4943", muted="#73726c",
-        accent="#2e7d5b", accent_hi="#256649", accent_press="#1c5139", accent_text="#ffffff",
-        sel_bg="#e7f3ec", sel_fg="#1e4935", sel_input="#e7f3ec", hover_bg="#f0eee6", press_bg="#f0eee6",
-        danger="#c0392b", danger_hi="#a52f23", danger_border="#e7b9b3",
-        dis_text="#b0aea5", dis_border="#e8e6dc", pdis_bg="#d4e7db", pdis_text="#6f8b7b", ddis_text="#d9a7a1",
-        grid="#e6e3d8", scroll="#d4d1c5", scroll_hi="#b8b5a8"),
-}
-
-FONT = '"JetBrains Mono", "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace'
-
-# @name tokens are replaced with the colors of the chosen theme
-TEMPLATE = """
-* { font-family: @font; font-size: @font_size; }
-QDialog { background: @bg; }
-QWidget { color: @text; }
-QToolTip { background: @surface; color: @text; border: 1px solid @border; padding: 3px 6px; }
-
-QFrame#banner { background: transparent; border: none; border-bottom: 1px solid @border; }
-QLabel#title { color: @text; font-size: @title_size; font-weight: 700; background: transparent; }
-QLabel#subtitle { color: @muted; background: transparent; }
-
-QFrame#card { background: transparent; border: none; }
-QFrame#card QPushButton { border-radius: 4px; padding: 4px 10px; }
-QFrame#card QComboBox#layerPicker, QFrame#card QLineEdit#globalSearch { border-radius: 4px; padding: 4px 10px; }
-QFrame#toolSeparator { background: @border; border: none; }
-QFrame#fieldFilterPopup { background: @surface; border: 1px solid @border; border-radius: 5px; }
-QLabel#fieldlabel { color: @muted; background: transparent; }
-QLabel#status { color: @muted; background: transparent; }
-QFrame#featurePreview, QFrame#tableArea { background: @surface; border: 1px solid @border; border-radius: 6px; }
-QLabel#previewTitle { color: @text; font-weight: 700; background: transparent; }
-QLabel#previewSecondary { color: @muted; background: transparent; }
-QLabel#previewSelectedSwatch { background: @accent; border: none; border-radius: 4px; }
-QLabel#previewNearbySwatch { background: @border_hi; border: none; border-radius: 4px; }
-QFrame#previewMapFrame { background: @surface; border: 1px solid @border; border-radius: 2px; }
-
-QLineEdit, QComboBox, QAbstractSpinBox {
-    background: @surface; border: 1px solid @border; border-radius: 4px;
-    padding: 3px 8px; min-height: 18px; selection-background-color: @sel_input; selection-color: @text_hi;
-}
-QLineEdit:hover, QComboBox:hover, QAbstractSpinBox:hover { border-color: @border_hi; }
-QLineEdit:focus, QComboBox:focus, QAbstractSpinBox:focus { border: 1px solid @accent; padding: 3px 8px; }
-QPlainTextEdit {
-    background: @surface; color: @text; border: 1px solid @border; border-radius: 4px;
-    padding: 4px 8px; selection-background-color: @sel_input; selection-color: @text_hi;
-}
-QPlainTextEdit:hover { border-color: @border_hi; }
-QPlainTextEdit:focus { border: 1px solid @accent; }
-QComboBox::drop-down { border: none; width: 22px; subcontrol-origin: padding; subcontrol-position: center right; }
-QComboBox::down-arrow { image: url(@down_url); width: 10px; height: 10px; }
-QAbstractSpinBox, QAbstractSpinBox:focus { padding-right: 28px; }
-QAbstractSpinBox::up-button {
-    subcontrol-origin: border; subcontrol-position: top right; width: 24px;
-    border-left: 1px solid @border; border-bottom: 1px solid @border;
-    border-top-right-radius: 4px; background: @alt;
-}
-QAbstractSpinBox::down-button {
-    subcontrol-origin: border; subcontrol-position: bottom right; width: 24px;
-    border-left: 1px solid @border; border-bottom-right-radius: 4px; background: @alt;
-}
-QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover { background: @hover_bg; }
-QAbstractSpinBox::up-button:pressed, QAbstractSpinBox::down-button:pressed { background: @sel_bg; }
-QAbstractSpinBox::up-arrow { image: url(@up_url); width: 10px; height: 10px; }
-QAbstractSpinBox::down-arrow { image: url(@down_url); width: 10px; height: 10px; }
-QAbstractItemView {
-    background: @surface; color: @text; border: 1px solid @border; outline: 0;
-    selection-background-color: @sel_bg; selection-color: @sel_fg;
-}
-
-QPushButton {
-    background: transparent; border: 1px solid @border; border-radius: 4px;
-    padding: 3px 10px; color: @text_soft; font-weight: normal;
-}
-QPushButton:hover { border-color: @accent; color: @text_hi; }
-QPushButton:pressed { background: transparent; border-color: @accent_press; color: @accent_press; }
-QPushButton:disabled { color: @dis_text; border-color: @dis_border; }
-QPushButton#primary { background: transparent; border: 1px solid @accent; color: @accent; }
-QPushButton#primary:hover { background: transparent; border-color: @accent_hi; color: @accent_hi; }
-QPushButton#primary:pressed { background: transparent; border-color: @accent_press; color: @accent_press; }
-QPushButton#primary:disabled { background: transparent; border-color: @dis_border; color: @dis_text; }
-QPushButton#danger { color: @danger; border-color: @danger_border; }
-QPushButton#danger:hover { border-color: @danger; color: @danger_hi; }
-QPushButton#danger:disabled { color: @ddis_text; border-color: @dis_border; }
-QPushButton#theme { padding: 1px 8px; color: @muted; }
-QPushButton#sortOption:checked { background: transparent; border: 2px solid @accent; color: @accent; }
-QPushButton#statsToggle:checked { background: transparent; border: 2px solid @accent; color: @accent; }
-
-QMenu { background: @surface; color: @text; border: 1px solid @border; padding: 4px; }
-QMenu::item { background: transparent; color: @text; padding: 6px 24px 6px 32px; border-radius: 3px; }
-QMenu::item:selected { background: @sel_bg; color: @sel_fg; }
-QMenu::item:disabled { color: @muted; }
-QMenu::separator { height: 1px; background: @border; margin: 4px 8px; }
-QMenu::icon { left: 8px; }
-
-QCheckBox { spacing: 6px; background: transparent; color: @text_soft; }
-QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid @border_hi; border-radius: 3px; background: transparent; }
-QCheckBox::indicator:hover { border-color: @accent; }
-QCheckBox::indicator:checked { background: @accent; border-color: @accent; image: url(@check_url); }
-QListWidget::indicator { width: 13px; height: 13px; border: 1px solid @border_hi; border-radius: 3px; background: @surface; }
-QListWidget::indicator:checked { background: @accent; border-color: @accent; image: url(@check_url); }
-
-QTableWidget {
-    background: @surface; alternate-background-color: @alt;
-    border: 1px solid @border; border-radius: 0; gridline-color: @grid;
-    selection-background-color: @sel_bg; selection-color: @sel_fg;
-}
-QTableWidget[editing="true"] { border: 1px solid @accent; }
-QTableWidget::item { padding: 1px 8px; border: none; border-right: 1px solid @grid; }
-QTableWidget::item:hover { background: @hover_bg; }
-QHeaderView::section {
-    background: @surface; color: @muted; font-weight: 600;
-    padding: 4px 8px; border: none; border-right: 1px solid @grid; border-bottom: 1px solid @border;
-}
-QTableCornerButton::section { background: @surface; border: none; }
-
-QScrollBar:vertical { background: transparent; width: 9px; margin: 1px; }
-QScrollBar::handle:vertical { background: @scroll; border-radius: 3px; min-height: 24px; }
-QScrollBar::handle:vertical:hover { background: @scroll_hi; }
-QScrollBar:horizontal { background: transparent; height: 9px; margin: 1px; }
-QScrollBar::handle:horizontal { background: @scroll; border-radius: 3px; min-width: 24px; }
-QScrollBar::handle:horizontal:hover { background: @scroll_hi; }
-QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
-QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
-"""
-
-# dropdown lists are separate pop-up windows, so they are styled directly
-POPUP_TEMPLATE = """
-QListView, QAbstractItemView {
-    font-family: @font; font-size: @font_size;
-    background-color: @surface; color: @text; border: 1px solid @border; outline: 0;
-    selection-background-color: @sel_bg; selection-color: @sel_fg;
-}
-QListView::item, QAbstractItemView::item {
-    min-height: 20px; padding: 1px 8px; color: @text; background-color: @surface;
-}
-QListView::item:hover, QAbstractItemView::item:hover { background-color: @hover_bg; color: @sel_fg; }
-QListView::item:selected, QAbstractItemView::item:selected { background-color: @sel_bg; color: @sel_fg; }
-QScrollBar:vertical { background: transparent; width: 9px; margin: 1px; }
-QScrollBar::handle:vertical { background: @scroll; border-radius: 3px; min-height: 24px; }
-QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
-QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
-"""
+def collect_column_statistics(task, source, columns, ids, max_distinct=None, full_layer=False):
+    """Forward to tasks.collect_column_statistics while honoring patched MAX_STAT_DISTINCT."""
+    limit = MAX_STAT_DISTINCT if max_distinct is None else max_distinct
+    return _collect_column_statistics(task, source, columns, ids, max_distinct=limit, full_layer=full_layer)
 
 
-def _fill(template, name, font_family=None, font_size=9):
-    t = dict(THEMES[name])
-    here = ICONS_DIR
-    t["font"] = '"{}"'.format(font_family.replace("\\", "\\\\").replace('"', '\\"')) if font_family else FONT
-    t["font_size"] = "{}pt".format(font_size)
-    t["title_size"] = "{}pt".format(font_size + 2)
-    t["down_url"] = os.path.join(here, "down_%s.svg" % name).replace("\\", "/")
-    t["up_url"] = os.path.join(here, "up_%s.svg" % name).replace("\\", "/")
-    t["check_url"] = os.path.join(here, "check_%s.svg" % name).replace("\\", "/")
-    return re.sub(r"@(\w+)", lambda m: t[m.group(1)], template)
+def _attribute_request(fids=None, attributes=None):
+    """Build a NoGeometry attribute-only feature request."""
+    request = QgsFeatureRequest()
+    request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+    if fids is not None:
+        request.setFilterFids(list(fids))
+    if attributes is not None:
+        request.setSubsetOfAttributes(list(attributes))
+    return request
 
 
-def build_css(name, font_family=None, font_size=9):
-    return _fill(TEMPLATE, name, font_family, font_size)
-
-
-def dark_palette(widget, name):
-    t = THEMES[name]
-    pal = widget.palette()
-    pal.setColor(QPalette.ColorRole.Base, QColor(t["surface"]))
-    pal.setColor(QPalette.ColorRole.Window, QColor(t["surface"]))
-    pal.setColor(QPalette.ColorRole.Text, QColor(t["text"]))
-    pal.setColor(QPalette.ColorRole.WindowText, QColor(t["text"]))
-    pal.setColor(QPalette.ColorRole.Highlight, QColor(t["sel_bg"]))
-    pal.setColor(QPalette.ColorRole.HighlightedText, QColor(t["sel_fg"]))
-    widget.setPalette(pal)
-
-
-def style_combo_popup(combo, name, font_family=None, font_size=9):
-    css = _fill(POPUP_TEMPLATE, name, font_family, font_size)
-    view = combo.view()
-    view.setStyleSheet(css)
-    dark_palette(view, name)
-    box = view.parentWidget()  # the frame around the list
-    if box is not None:
-        dark_palette(box, name)
-        box.setAutoFillBackground(True)
-    comp = combo.completer()   # typing suggestions of editable boxes
-    if comp is not None and comp.popup() is not None:
-        comp.popup().setStyleSheet(css)
-        dark_palette(comp.popup(), name)
+def edited_feature_ids(layer):
+    """Return sorted IDs of modified or newly added features in the active edit buffer."""
+    buf = layer.editBuffer() if layer is not None and layer.isEditable() else None
+    if buf is None:
+        return ()
+    fids = set(buf.addedFeatures()) | set(buf.changedAttributeValues()) | set(buf.changedGeometries())
+    fids.difference_update(buf.deletedFeatureIds())
+    return tuple(sorted(fids))
 
 
 class SortItem(QTableWidgetItem):
     """Sorts numbers as numbers, text as text (like Excel)."""
+
     def __lt__(self, other):
         a, b = self.text(), other.text()
         try:
             return float(a) < float(b)
         except ValueError:
             return a.lower() < b.lower()
-
-
-class FontPreviewDelegate(QStyledItemDelegate):
-    """Paint each font explicitly, bypassing the interface's stylesheet font."""
-    def __init__(self, theme, point_size, parent):
-        super().__init__(parent)
-        self.theme = theme
-        self.point_size = point_size
-
-    def preview_font(self, index):
-        return QFont(str(index.data(Qt.ItemDataRole.DisplayRole)), self.point_size)
-
-    def paint(self, painter, option, index):
-        colors = THEMES[self.theme]
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
-        painter.save()
-        try:
-            painter.setClipRect(option.rect)
-            painter.fillRect(option.rect, QColor(colors["sel_bg" if selected else "hover_bg" if hover else "surface"]))
-            painter.setPen(QColor(colors["sel_fg" if selected else "text"]))
-            painter.setFont(self.preview_font(index))
-            painter.drawText(option.rect.adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                             str(index.data(Qt.ItemDataRole.DisplayRole)))
-        finally:
-            painter.restore()
-
-    def sizeHint(self, option, index):
-        metrics = QFontMetrics(self.preview_font(index))
-        return QSize(max(280, metrics.horizontalAdvance(str(index.data(Qt.ItemDataRole.DisplayRole))) + 20),
-                     max(24, metrics.height() + 8))
-
-
-class SettingsDialog(QDialog):
-    def __init__(self, parent, family, size, theme, pinned=True):
-        super().__init__(parent)
-        self.setWindowTitle("QuickTable Settings")
-        self.setModal(True)
-        self.setFont(QFont(family, size))
-        self.setStyleSheet(build_css(theme, family, size))
-        self.resize(440, 190)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addWidget(QLabel("Font"))
-        self.font_picker = QFontComboBox()
-        self.font_picker.setCurrentFont(QFont(family))
-        self.font_picker.setMinimumContentsLength(18)
-        self.font_picker.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        row.addWidget(self.font_picker, 1)
-        row.addWidget(QLabel("Size"))
-        self.font_size_spin = QSpinBox()
-        self.font_size_spin.setRange(8, 24)
-        self.font_size_spin.setSuffix(" pt")
-        self.font_size_spin.setValue(size)
-        self.font_size_spin.setKeyboardTracking(False)
-        self.font_size_spin.setMinimumWidth(110)
-        self.font_size_spin.setButtonSymbols(QSpinBox.ButtonSymbols.UpDownArrows)
-        row.addWidget(self.font_size_spin)
-        layout.addLayout(row)
-        self.preview = QLabel("Aa Bb Cc  0123456789")
-        self.preview.setMinimumHeight(32)
-        self.preview.setWordWrap(True)
-        layout.addWidget(self.preview)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Theme"))
-        self.theme_picker = QComboBox()
-        self.theme_picker.addItem("Light", "light")
-        self.theme_picker.addItem("Dark", "dark")
-        self.theme_picker.setCurrentIndex(self.theme_picker.findData(theme))
-        self.theme_picker.setMinimumWidth(115)
-        row.addWidget(self.theme_picker)
-        self.pin_cb = QCheckBox("Keep QuickTable on top")
-        self.pin_cb.setChecked(pinned)
-        row.addSpacing(12)
-        row.addWidget(self.pin_cb)
-        row.addStretch(1)
-        layout.addLayout(row)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        self.font_delegate = FontPreviewDelegate(theme, size, self.font_picker)
-        self.font_picker.setItemDelegate(self.font_delegate)
-        self.updating_preview = False
-
-        def preview_font(*args):
-            if self.updating_preview:
-                return
-            self.updating_preview = True
-            try:
-                selected_theme = self.theme_picker.currentData()
-                self.setStyleSheet(build_css(selected_theme, family, size))
-                self.preview.setStyleSheet(_fill(
-                    "font-family: @font; font-size: @font_size; color: @text;", selected_theme,
-                    self.font_picker.currentFont().family(), self.font_size_spin.value()))
-                self.font_delegate.theme = selected_theme
-                self.font_delegate.point_size = self.font_size_spin.value()
-                style_combo_popup(self.font_picker, selected_theme, family, size)
-                style_combo_popup(self.theme_picker, selected_theme, family, size)
-                self.font_picker.view().doItemsLayout()
-                self.font_picker.view().viewport().update()
-            finally:
-                self.updating_preview = False
-
-        self.font_picker.currentFontChanged.connect(preview_font)
-        self.font_size_spin.valueChanged.connect(preview_font)
-        self.theme_picker.currentIndexChanged.connect(preview_font)
-        preview_font()
-
-
-
-
-class AddFieldDialog(QDialog):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.setWindowTitle("Add fields")
-        self.setStyleSheet(parent.styleSheet())
-        layout = QVBoxLayout(self)
-        self.resize(640, 480)
-        self.queued = []
-        group = QGroupBox("New field")
-        form = QGridLayout(group)
-        self.name = QLineEdit()
-        self.name.setPlaceholderText("Field name")
-        self.field_type = QComboBox()
-        for label, value in (("Text", QMetaType.Type.QString), ("Whole number (32-bit)", QMetaType.Type.Int),
-                             ("Whole number (64-bit)", QMetaType.Type.LongLong), ("Decimal number", QMetaType.Type.Double),
-                             ("Date", QMetaType.Type.QDate), ("True / False", QMetaType.Type.Bool)):
-            self.field_type.addItem(label, value)
-        self.length = QSpinBox()
-        self.length.setRange(0, 255)
-        self.length.setSpecialValueText("Default")
-        self.precision = QSpinBox()
-        self.precision.setRange(0, 30)
-        form.addWidget(QLabel("Name"), 0, 0)
-        form.addWidget(self.name, 0, 1, 1, 3)
-        form.addWidget(QLabel("Type"), 1, 0)
-        form.addWidget(self.field_type, 1, 1, 1, 3)
-        form.addWidget(QLabel("Length"), 2, 0)
-        form.addWidget(self.length, 2, 1)
-        form.addWidget(QLabel("Decimal precision"), 2, 2)
-        form.addWidget(self.precision, 2, 3)
-        add = QPushButton("Add to fields list")
-        add.setObjectName("primary")
-        add.clicked.connect(self.add_to_list)
-        form.addWidget(add, 3, 1, 1, 3)
-        layout.addWidget(group)
-        listing = QGroupBox("Fields list")
-        list_layout = QVBoxLayout(listing)
-        self.fields_list = QTableWidget(0, 4)
-        self.fields_list.setHorizontalHeaderLabels(["Name", "Type", "Length", "Precision"])
-        self.fields_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.fields_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.fields_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.fields_list.verticalHeader().hide()
-        self.fields_list.horizontalHeader().setStretchLastSection(True)
-        list_row = QHBoxLayout()
-        list_row.addWidget(self.fields_list, 1)
-        order_buttons = QVBoxLayout()
-        up = QPushButton("↑")
-        up.setToolTip("Move field up")
-        up.clicked.connect(lambda: self.move_selected(-1))
-        down = QPushButton("↓")
-        down.setToolTip("Move field down")
-        down.clicked.connect(lambda: self.move_selected(1))
-        order_buttons.addWidget(up)
-        order_buttons.addWidget(down)
-        order_buttons.addStretch(1)
-        list_row.addLayout(order_buttons)
-        list_layout.addLayout(list_row)
-        remove = QPushButton("Remove selected field")
-        remove.clicked.connect(self.remove_selected)
-        list_layout.addWidget(remove, 0, Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(listing, 1)
-        self.field_type.currentIndexChanged.connect(self.update_type)
-        self.update_type()
-        note = QLabel("Each field starts empty. Save edits to commit.")
-        note.setWordWrap(True)
-        footer = QHBoxLayout()
-        footer.addWidget(note, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add Fields")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        footer.addWidget(buttons)
-        layout.addLayout(footer)
-
-    def current_spec(self):
-        return (self.name.text().strip(), self.field_type.currentData(),
-                self.length.value() if self.length.isEnabled() else 0,
-                self.precision.value() if self.precision.isEnabled() else 0)
-
-    def field_specs(self):
-        current = self.current_spec()
-        return self.queued + ([current] if current[0] else [])
-
-    def add_to_list(self):
-        spec = self.current_spec()
-        if not spec[0]:
-            self.name.setFocus()
-            return
-        self.queued.append(spec)
-        row = self.fields_list.rowCount()
-        self.fields_list.insertRow(row)
-        for col, text in enumerate((spec[0], self.field_type.currentText(), str(spec[2]) if spec[2] else "Default", str(spec[3]))):
-            self.fields_list.setItem(row, col, QTableWidgetItem(text))
-        self.name.clear()
-        self.name.setFocus()
-
-    def remove_selected(self):
-        row = self.fields_list.currentRow()
-        if row >= 0:
-            self.queued.pop(row)
-            self.fields_list.removeRow(row)
-
-    def move_selected(self, direction):
-        row = self.fields_list.currentRow()
-        target = row + direction
-        if row < 0 or target < 0 or target >= len(self.queued):
-            return
-        self.queued[row], self.queued[target] = self.queued[target], self.queued[row]
-        for column in range(self.fields_list.columnCount()):
-            first = self.fields_list.takeItem(row, column)
-            second = self.fields_list.takeItem(target, column)
-            self.fields_list.setItem(row, column, second)
-            self.fields_list.setItem(target, column, first)
-        self.fields_list.selectRow(target)
-
-    def update_type(self):
-        kind = self.field_type.currentData()
-        self.length.setEnabled(kind in (QMetaType.Type.QString, QMetaType.Type.Int, QMetaType.Type.LongLong, QMetaType.Type.Double))
-        self.precision.setEnabled(kind == QMetaType.Type.Double)
-
-
-class DeleteFieldsDialog(QDialog):
-    def __init__(self, parent, names):
-        super().__init__(parent)
-        self.setWindowTitle("Delete fields")
-        self.setStyleSheet(parent.styleSheet())
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Select fields to delete:"))
-        self.list = QListWidget()
-        for name in names:
-            item = QListWidgetItem(name, self.list)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-        layout.addWidget(self.list)
-        layout.addWidget(QLabel("Check the fields you want to delete."))
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Continue")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def selected_names(self):
-        return [self.list.item(i).text() for i in range(self.list.count())
-                if self.list.item(i).checkState() == Qt.CheckState.Checked]
-
-
-class BulkEditDialog(QDialog):
-    """Choose a field and value and review the changes in a single window."""
-
-    def __init__(self, parent, layer, field_names, fids):
-        super().__init__(parent)
-        self.setWindowTitle("Bulk edit")
-        self.setStyleSheet(parent.styleSheet())
-        self.resize(480, 350)
-        self.layer = layer
-        self.fids = fids
-        request = QgsFeatureRequest().setFilterFids(fids)
-        self.features = {feature.id(): feature for feature in layer.getFeatures(request)}
-        self.value = None
-        self.original_values = {}
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Change {} selected row(s) on this page".format(len(fids))))
-        form = QFormLayout()
-        self.field = QComboBox()
-        self.field.addItems(field_names)
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("Enter a value; text spaces are preserved")
-        self.set_null = QCheckBox("Set NULL")
-        self.set_null.toggled.connect(lambda checked: self.input.setEnabled(not checked))
-        form.addRow("Column", self.field)
-        form.addRow("New value", self.input)
-        form.addRow(self.set_null)
-        layout.addLayout(form)
-        layout.addWidget(QLabel("Preview (first 10 rows)"))
-        self.preview = QPlainTextEdit()
-        self.preview.setReadOnly(True)
-        dark_palette(self.preview, parent.theme)
-        layout.addWidget(self.preview)
-        self.hint = QLabel("Changes are undoable and remain unsaved until Save edits.")
-        self.hint.setWordWrap(True)
-        layout.addWidget(self.hint)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.apply_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self.apply_button.setText("Apply changes")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.field.currentIndexChanged.connect(self.update_preview)
-        self.input.textChanged.connect(self.update_preview)
-        self.set_null.toggled.connect(self.update_preview)
-        self.update_preview()
-
-    def update_preview(self):
-        index = self.layer.fields().indexFromName(self.field.currentText())
-        try:
-            if index < 0:
-                raise ValueError("The selected field is no longer available.")
-            value = FinderDialog.convert(self.layer.fields()[index], None if self.set_null.isChecked() else self.input.text())
-            if len(self.features) != len(self.fids):
-                raise ValueError("Some selected features are no longer available.")
-            self.value = value
-            self.original_values = {fid: self.features[fid][index] for fid in self.fids}
-
-            def display(value):
-                return "NULL" if value is None or value == NULL else str(value)
-
-            lines = ["{}: {} → {}".format(fid, display(self.original_values[fid]), display(value))
-                     for fid in self.fids[:10]]
-            if len(self.fids) > 10:
-                lines.append("… and {} more".format(len(self.fids) - 10))
-            self.preview.setPlainText("\n".join(lines))
-            self.hint.setText("Changes are undoable and remain unsaved until Save edits.")
-            self.apply_button.setEnabled(True)
-        except (ValueError, OverflowError) as exc:
-            self.preview.clear()
-            self.hint.setText("Invalid value: {}".format(exc))
-            self.apply_button.setEnabled(False)
-
-
-class PreviewPanSelectTool(QgsMapToolPan):
-    """Pan by dragging; select a displayed feature with a click."""
-
-    def __init__(self, canvas, layer, snapshot, on_selected):
-        super().__init__(canvas)
-        self.canvas = canvas
-        self.layer = layer
-        self.on_selected = on_selected
-        self.geometries = []
-        for group in ('selected', 'nearby'):
-            for fid, wkb in snapshot[group].items():
-                geometry = QgsGeometry()
-                geometry.fromWkb(wkb)
-                if not geometry.isEmpty():
-                    self.geometries.append((fid, geometry))
-        self.press_pos = None
-
-    def canvasPressEvent(self, event):
-        self.press_pos = event.pos() if event.button() == Qt.MouseButton.LeftButton else None
-        super().canvasPressEvent(event)
-
-    def canvasReleaseEvent(self, event):
-        click = (self.press_pos is not None and event.button() == Qt.MouseButton.LeftButton
-                 and (event.pos() - self.press_pos).manhattanLength() < QApplication.startDragDistance())
-        self.press_pos = None
-        super().canvasReleaseEvent(event)
-        if not click:
-            return
-        point = QgsGeometry.fromPointXY(event.mapPoint())
-        tolerance = self.canvas.mapUnitsPerPixel() * 5
-        matches = [(geometry.distance(point), fid) for fid, geometry in self.geometries]
-        matches = [(distance, fid) for distance, fid in matches if 0 <= distance <= tolerance]
-        if matches:
-            fid = min(matches)[1]
-            self.layer.selectByIds([fid])
-            self.on_selected(self.layer, fid)
-
-
-def preview_label_angle(geometry):
-    """Return the screen angle of the longest side of a feature's oriented bounds."""
-    box = geometry.orientedMinimumBoundingBox()[0]
-    vertices = list(box.vertices()) if not box.isEmpty() else list(geometry.vertices())
-    segments = [(b.x() - a.x(), b.y() - a.y()) for a, b in zip(vertices, vertices[1:])]
-    if not segments:
-        return 0.0
-    dx, dy = max(segments, key=lambda segment: segment[0] ** 2 + segment[1] ** 2)
-    if not (dx or dy):
-        return 0.0
-    angle = math.degrees(math.atan2(-dy, dx))
-    return (angle + 90) % 180 - 90
-
-
-class PreviewLabel(QgsMapCanvasItem):
-    """A map-anchored, readable label that follows pan and zoom."""
-
-    def __init__(self, canvas, point, text, selected=True, angle=0):
-        super().__init__(canvas)
-        self.point = point
-        self.text = text
-        self.selected = selected
-        self.font = QFont(QApplication.font())
-        self.font.setBold(True)
-        metrics = QFontMetrics(self.font)
-        display_text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, 208)
-        self.text_path = QPainterPath()
-        self.text_path.addText(3, metrics.ascent() + 3, self.font, display_text)
-        self.box = QRectF(0, 0, metrics.horizontalAdvance(display_text) + 6, metrics.height() + 6)
-        self.setTransformOriginPoint(self.box.center())
-        self.setRotation(angle)
-        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        self.setZValue(100)
-        self.updatePosition()
-
-    def boundingRect(self):
-        return self.box
-
-    def updatePosition(self):
-        pos = self.toCanvasCoordinates(self.point)
-        self.setPos(pos.x() - self.box.width() / 2, pos.y() - self.box.height() / 2)
-
-    def paint(self, painter, option, widget=None):
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor('white'), 3)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(self.text_path)
-        painter.fillPath(self.text_path, QColor('#174d37' if self.selected else '#454c47'))
-
-
-class EmptyPreviewPanel(QFrame):
-    """Show a helpful prompt when the layer has no selection."""
-
-    def __init__(self, parent, layer):
-        super().__init__(parent)
-        self.layer = layer
-        self.setObjectName('featurePreview')
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 10)
-        layout.setSpacing(10)
-        title = QHBoxLayout()
-        heading = QLabel('Features Preview')
-        heading.setObjectName('previewTitle')
-        title.addWidget(heading, 1)
-        self.close_button = QPushButton('Close')
-        self.close_button.setToolTip('Hide Features Preview')
-        self.close_button.clicked.connect(parent.hide_nearby_preview)
-        title.addWidget(self.close_button)
-        layout.addLayout(title)
-        self.message = QLabel('Select a feature to see its nearby features.')
-        self.message.setObjectName('previewSecondary')
-        self.message.setWordWrap(True)
-        self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.message, 1)
-        self.setMinimumWidth(264)
-
-
-class NearbyPreviewPanel(QFrame):
-    """Display copied nearby geometry without changing the source layer."""
-
-    def __init__(self, parent, layer, snapshot, nearby_count, extent=None, recenter=True):
-        super().__init__(parent)
-        self.owner = parent
-        self.layer = layer
-        self.layer_id = layer.id()
-        self.snapshot = snapshot
-        self.label_items = {}
-        self.setObjectName('featurePreview')
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 10)
-        layout.setSpacing(10)
-        title = QHBoxLayout()
-        title.setSpacing(8)
-        heading = QLabel("Features Preview")
-        heading.setObjectName('previewTitle')
-        title.addWidget(heading, 1)
-        self.close_button = QPushButton("Close")
-        self.close_button.setToolTip("Hide Features Preview")
-        self.close_button.clicked.connect(parent.hide_nearby_preview)
-        title.addWidget(self.close_button)
-        layout.addLayout(title)
-        legend = QHBoxLayout()
-        legend.setSpacing(6)
-        for label, name in (('Selected', 'previewSelectedSwatch'), ('Nearby', 'previewNearbySwatch')):
-            marker = QLabel()
-            marker.setObjectName(name)
-            marker.setFixedSize(8, 8)
-            legend.addWidget(marker)
-            caption = QLabel(label)
-            caption.setObjectName('previewSecondary')
-            legend.addWidget(caption)
-            if name == 'previewSelectedSwatch':
-                legend.addSpacing(10)
-        legend.addStretch(1)
-        layout.addLayout(legend)
-        distance_row = QHBoxLayout()
-        distance_row.setSpacing(6)
-        distance_caption = QLabel('Range')
-        distance_caption.setObjectName('previewSecondary')
-        distance_row.addWidget(distance_caption)
-        self.distance_value = QDoubleSpinBox()
-        self.distance_value.setDecimals(3)
-        self.distance_value.setRange(0, 1000000000)
-        self.distance_value.setSpecialValueText('Touching')
-        self.distance_value.setToolTip('Zero finds touching features. Enter a distance to include nearby features.')
-        self.distance_units = QComboBox()
-        for label, unit in (('m', Qgis.DistanceUnit.Meters), ('km', Qgis.DistanceUnit.Kilometers),
-                            ('cm', Qgis.DistanceUnit.Centimeters), ('in', Qgis.DistanceUnit.Inches),
-                            ('ft', Qgis.DistanceUnit.Feet), ('yd', Qgis.DistanceUnit.Yards),
-                            ('mi', Qgis.DistanceUnit.Miles)):
-            self.distance_units.addItem(label, unit)
-        distance, unit = parent.preview_distances.get(layer.id(), (0, Qgis.DistanceUnit.Meters))
-        self.distance_value.setValue(distance)
-        self.distance_units.setCurrentIndex(max(0, self.distance_units.findData(unit)))
-        self.apply_distance = QPushButton('Apply')
-        self.apply_distance.setToolTip('Update nearby features using this range')
-        self.apply_distance.clicked.connect(self.apply_preview_distance)
-        distance_row.addWidget(self.distance_value, 1)
-        distance_row.addWidget(self.distance_units)
-        distance_row.addWidget(self.apply_distance)
-        layout.addLayout(distance_row)
-        label_row = QHBoxLayout()
-        label_row.setSpacing(8)
-        label_title = QLabel('Labels')
-        label_title.setObjectName('previewSecondary')
-        label_row.addWidget(label_title)
-        self.label_field = QComboBox()
-        self.label_field.addItem('No label', None)
-        for field in layer.fields():
-            self.label_field.addItem(field.name(), field.name())
-        saved_field = parent.preview_label_fields.get(layer.id())
-        saved_index = self.label_field.findData(saved_field) if saved_field else 0
-        self.label_field.setCurrentIndex(max(0, saved_index))
-        label_row.addWidget(self.label_field, 1)
-        layout.addLayout(label_row)
-        self.canvas = QgsMapCanvas(self)
-        self.canvas.setCanvasColor(QColor(THEMES[parent.theme]["surface"]))
-        if layer.crs().isValid():
-            self.canvas.setDestinationCrs(layer.crs())
-        self.canvas.setLayers([])
-        self.canvas.setMinimumSize(240, 180)
-        self.canvas.setToolTip("Drag to pan, scroll to zoom, or click a feature to select it")
-        self.map_tool = PreviewPanSelectTool(self.canvas, layer, snapshot, parent.focus_preview_feature)
-        self.canvas.setMapTool(self.map_tool)
-        map_frame = QFrame()
-        map_frame.setObjectName('previewMapFrame')
-        map_layout = QVBoxLayout(map_frame)
-        map_layout.setContentsMargins(1, 1, 1, 1)
-        map_layout.addWidget(self.canvas)
-        layout.addWidget(map_frame, 1)
-        self.nearby_band = QgsRubberBand(self.canvas, layer.geometryType())
-        self.nearby_band.setStrokeColor(QColor("#a7aea9"))
-        self.nearby_band.setFillColor(QColor(150, 160, 153, 35))
-        self.nearby_band.setWidth(1)
-        self.nearby_band.setIconSize(8)
-        self.selected_band = QgsRubberBand(self.canvas, layer.geometryType())
-        self.selected_band.setStrokeColor(QColor("#26805b"))
-        self.selected_band.setFillColor(QColor(46, 125, 91, 55))
-        self.selected_band.setWidth(3)
-        self.selected_band.setIconSize(10)
-        bounds = []
-        selected_bounds = []
-        for name, band in (("nearby", self.nearby_band), ("selected", self.selected_band)):
-            for wkb in snapshot[name].values():
-                geometry = QgsGeometry()
-                geometry.fromWkb(wkb)
-                if geometry.isEmpty():
-                    continue
-                band.addGeometry(geometry, None, False)
-                bounds.append(geometry.boundingBox())
-                if name == 'selected':
-                    selected_bounds.append(geometry.boundingBox())
-            band.show()
-        if extent is None and bounds:
-            xmin = min(rect.xMinimum() for rect in bounds)
-            xmax = max(rect.xMaximum() for rect in bounds)
-            ymin = min(rect.yMinimum() for rect in bounds)
-            ymax = max(rect.yMaximum() for rect in bounds)
-            coordinate_scale = max(abs(xmin), abs(xmax), abs(ymin), abs(ymax), 1.0)
-            span = max(xmax - xmin, ymax - ymin, coordinate_scale * 1e-9)
-            margin = span * 0.12
-            if selected_bounds:
-                x = (min(r.xMinimum() for r in selected_bounds) + max(r.xMaximum() for r in selected_bounds)) / 2
-                y = (min(r.yMinimum() for r in selected_bounds) + max(r.yMaximum() for r in selected_bounds)) / 2
-                half_width = max(x - xmin, xmax - x) + margin
-                half_height = max(y - ymin, ymax - y) + margin
-                extent = QgsRectangle(x - half_width, y - half_height, x + half_width, y + half_height)
-            else:
-                extent = QgsRectangle(xmin - margin, ymin - margin, xmax + margin, ymax + margin)
-        if extent is not None:
-            if recenter and selected_bounds:
-                x = (min(r.xMinimum() for r in selected_bounds) + max(r.xMaximum() for r in selected_bounds)) / 2
-                y = (min(r.yMinimum() for r in selected_bounds) + max(r.yMaximum() for r in selected_bounds)) / 2
-                extent = QgsRectangle(x - extent.width() / 2, y - extent.height() / 2,
-                                      x + extent.width() / 2, y + extent.height() / 2)
-            self.canvas.setExtent(extent)
-        self.canvas.refresh()
-        distance = parent.preview_distances.get(layer.id(), (0, None))[0]
-        text = "{} nearby feature(s) found.".format(nearby_count) if distance else "{} touching feature(s) found.".format(nearby_count)
-        if not nearby_count:
-            text = "No nearby features found." if distance else "No touching features found."
-        if snapshot["truncated"]:
-            text += " Map preview is limited; the table is unchanged."
-        self.message = QLabel(text)
-        self.message.setObjectName('previewSecondary')
-        self.message.setWordWrap(True)
-        layout.addWidget(self.message)
-        self.label_field.currentIndexChanged.connect(self.update_labels)
-        self.update_labels()
-
-    def apply_preview_distance(self):
-        distance = self.distance_value.value()
-        crs = self.layer.crs()
-        if distance and (not crs.isValid() or QgsUnitTypes.unitType(crs.mapUnits()) == Qgis.DistanceUnitType.Unknown):
-            self.message.setText('Choose a valid layer coordinate system to measure distance.')
-            return
-        new_range = (distance, self.distance_units.currentData())
-        changed = self.owner.preview_distances.get(self.layer.id(), (0, Qgis.DistanceUnit.Meters)) != new_range
-        self.owner.preview_distances[self.layer.id()] = new_range
-        self.owner.schedule_nearby_preview()
-        if changed:
-            self.owner.preview_extents.pop(self.layer.id(), None)
-            self.owner.preview_selection.pop(self.layer.id(), None)
-
-    def update_labels(self):
-        for item in self.label_items.values():
-            self.canvas.scene().removeItem(item)
-        self.label_items = {}
-        field = self.label_field.currentData()
-        self.owner.preview_label_fields[self.layer.id()] = field
-        if field is None:
-            return
-        index = self.layer.fields().indexFromName(field)
-        if index < 0:
-            return
-        geometries = dict(self.snapshot['nearby'])
-        geometries.update(self.snapshot['selected'])
-        request = QgsFeatureRequest().setFilterFids(list(geometries))
-        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
-        request.setSubsetOfAttributes([index])
-        for feature in self.layer.getFeatures(request):
-            value = attribute_text(feature.attribute(index))
-            if not value:
-                continue
-            geometry = QgsGeometry()
-            geometry.fromWkb(geometries[feature.id()])
-            anchor = geometry.pointOnSurface()
-            if anchor.isEmpty():
-                anchor = geometry.centroid()
-            if not anchor.isEmpty():
-                self.label_items[feature.id()] = PreviewLabel(
-                    self.canvas, anchor.asPoint(), value, feature.id() in self.snapshot['selected'],
-                    preview_label_angle(geometry))
-
-
-class FindReplaceDialog(QDialog):
-    def __init__(self, parent, layer, names):
-        super().__init__(parent)
-        self.setWindowTitle("Find and replace")
-        self.setStyleSheet(parent.styleSheet())
-        self.resize(560, 480)
-        self.layer = layer
-        self.task = None
-        self.suggestion_task = None
-        self.preview_result = None
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-        self.find = QLineEdit()
-        self.find.setToolTip("Suggestions come from up to 2,000 features in the selected scope.")
-        self.suggestion_model = QStringListModel(self)
-        self.completer = QCompleter(self.suggestion_model, self.find)
-        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self.completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self.find.setCompleter(self.completer)
-        self.replacement = QLineEdit()
-        self.field = QComboBox()
-        self.field.addItem("All writable text columns", None)
-        for name in names:
-            self.field.addItem(name, name)
-        self.scope = QComboBox()
-        self.scope.addItem("Filtered results", "filtered")
-        self.scope.addItem("Entire layer", "layer")
-        if parent.selected_fids():
-            self.scope.addItem("Selected rows", "selected")
-        self.case = QCheckBox("Match case")
-        form.addRow("Find", self.find)
-        form.addRow("Replace with", self.replacement)
-        form.addRow("Columns", self.field)
-        form.addRow("Search in", self.scope)
-        form.addRow(self.case)
-        layout.addLayout(form)
-        self.preview_button = QPushButton("Preview")
-        self.preview_button.clicked.connect(self.start_preview)
-        layout.addWidget(self.preview_button)
-        self.preview = QPlainTextEdit()
-        self.preview.setReadOnly(True)
-        self.preview.setPlaceholderText("Preview matches before applying changes.")
-        layout.addWidget(self.preview)
-        self.notice = QLabel("Changes are undoable until saved.")
-        self.notice.setWordWrap(True)
-        layout.addWidget(self.notice)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.apply_button = buttons.addButton("Replace all", QDialogButtonBox.ButtonRole.AcceptRole)
-        self.apply_button.setEnabled(False)
-        self.apply_button.clicked.connect(self.apply_preview)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.preview_timer = QTimer(self)
-        self.preview_timer.setSingleShot(True)
-        self.preview_timer.setInterval(350)
-        self.preview_timer.timeout.connect(self.start_preview)
-        self.suggestion_timer = QTimer(self)
-        self.suggestion_timer.setSingleShot(True)
-        self.suggestion_timer.setInterval(300)
-        self.suggestion_timer.timeout.connect(self.update_suggestions)
-        self.find.textChanged.connect(self.schedule_preview)
-        self.replacement.textChanged.connect(self.schedule_preview)
-        self.field.currentIndexChanged.connect(self.schedule_preview)
-        self.scope.currentIndexChanged.connect(self.schedule_preview)
-        self.case.toggled.connect(self.schedule_preview)
-        self.find.textChanged.connect(self.schedule_suggestions)
-        self.field.currentIndexChanged.connect(self.schedule_suggestions)
-        self.scope.currentIndexChanged.connect(self.schedule_suggestions)
-        self.case.toggled.connect(self.schedule_suggestions)
-
-    def schedule_preview(self, *args):
-        self.invalidate_preview()
-        if self.find.text():
-            self.notice.setText("Updating preview…")
-            self.preview_timer.start()
-        else:
-            self.notice.setText("Enter text to find.")
-
-    def schedule_suggestions(self, *args):
-        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseSensitive if self.case.isChecked()
-                                          else Qt.CaseSensitivity.CaseInsensitive)
-        self.suggestion_timer.stop()
-        if self.suggestion_task is not None:
-            self.suggestion_task.cancel()
-            self.suggestion_task = None
-        self.suggestion_model.setStringList([])
-        if self.find.text():
-            self.suggestion_timer.start()
-
-    def update_suggestions(self):
-        parent = self.parent()
-        if parent.closing or parent.current_layer() != self.layer:
-            return
-        names = ([self.field.currentData()] if self.field.currentData() else
-                 [self.field.itemData(i) for i in range(1, self.field.count())])
-        columns = [self.layer.fields().indexFromName(name) for name in names]
-        if any(index < 0 for index in columns):
-            return
-        scope = self.scope.currentData()
-        if scope == "filtered" and parent.result_ids is None:
-            return
-        ids = (None if scope == "layer" else tuple(parent.selected_fids()) if scope == "selected"
-               else tuple(parent.result_ids))
-        selected = set(ids) if scope == "selected" else None
-        needle, version = self.find.text(), parent.query_version
-        def finished(exception, result=None):
-            if self.suggestion_task is not task:
-                return
-            self.suggestion_task = None
-            if (exception or result is None or parent.closing or parent.current_layer() != self.layer
-                    or parent.query_version != version or self.find.text() != needle
-                    or (selected is not None and set(parent.selected_fids()) != selected)):
-                return
-            self.suggestion_model.setStringList(result)
-            if result and self.find.hasFocus() and self.isVisible():
-                self.completer.complete()
-        task = QgsTask.fromFunction("QuickTable: find suggestions", replace_suggestions,
-                                    source=QgsVectorLayerFeatureSource(self.layer), ids=ids,
-                                    columns=columns, needle=needle, case_sensitive=self.case.isChecked(),
-                                    on_finished=finished)
-        task.setDependentLayers([self.layer])
-        self.suggestion_task = task
-        QgsApplication.taskManager().addTask(task)
-
-    def invalidate_preview(self, *args):
-        self.preview_timer.stop()
-        if self.task is not None:
-            self.task.cancel()
-            self.task = None
-        self.preview_result = None
-        self.apply_button.setEnabled(False)
-        self.preview_button.setEnabled(True)
-        self.preview.clear()
-
-    def reject(self):
-        self.invalidate_preview()
-        self.suggestion_timer.stop()
-        if self.suggestion_task is not None:
-            self.suggestion_task.cancel()
-            self.suggestion_task = None
-        super().reject()
-
-    def start_preview(self):
-        self.invalidate_preview()
-        parent = self.parent()
-        if not self.find.text():
-            self.notice.setText("Enter text to find.")
-            return
-        if parent.current_layer() != self.layer or not self.layer.isEditable():
-            self.notice.setText("The layer or edit mode changed.")
-            return
-        names = ([self.field.currentData()] if self.field.currentData() else
-                 [self.field.itemData(i) for i in range(1, self.field.count())])
-        columns = [self.layer.fields().indexFromName(name) for name in names]
-        if any(index < 0 for index in columns):
-            self.notice.setText("A column is no longer available.")
-            return
-        scope = self.scope.currentData()
-        if scope == "filtered" and parent.result_ids is None:
-            self.notice.setText("Wait for filtered results.")
-            return
-        ids = (None if scope == "layer" else tuple(parent.selected_fids()) if scope == "selected"
-               else tuple(parent.result_ids))
-        version = parent.query_version
-        selected = set(parent.selected_fids()) if scope == "selected" else None
-        self.notice.setText("Preparing preview…")
-        self.preview_button.setEnabled(False)
-        def finished(exception, result=None):
-            if self.task is not task:
-                return
-            self.task = None
-            self.preview_button.setEnabled(True)
-            if parent.closing or parent.current_layer() != self.layer or parent.query_version != version:
-                self.notice.setText("The layer or results changed. Preview again.")
-                return
-            if exception or result is None:
-                self.notice.setText("Preview failed: {}".format(exception) if exception else "Preview canceled.")
-                return
-            originals, changes = result
-            if not changes:
-                self.notice.setText("No matching values found.")
-                return
-            lines = []
-            for fid, values in changes.items():
-                for column, value in values.items():
-                    lines.append("{} · {}: {} → {}".format(fid, self.layer.fields()[column].name(),
-                                 str(originals[fid][column])[:100], str(value)[:100]))
-                    if len(lines) >= 20:
-                        break
-                if len(lines) >= 20:
-                    break
-            self.preview.setPlainText("\n".join(lines))
-            count = sum(len(values) for values in changes.values())
-            self.notice.setText("{} cell(s) in {} feature(s) will change. Showing up to 20.".format(count, len(changes)))
-            self.preview_result = (originals, changes, names, scope, version, selected)
-            self.apply_button.setEnabled(True)
-        task = QgsTask.fromFunction("QuickTable: preview replacements", replace_columns_snapshot,
-                 source=QgsVectorLayerFeatureSource(self.layer), ids=ids, columns=columns,
-                 needle=self.find.text(), replacement=self.replacement.text(), case_sensitive=self.case.isChecked(),
-                 on_finished=finished)
-        task.setDependentLayers([self.layer])
-        self.task = task
-        QgsApplication.taskManager().addTask(task)
-
-    def apply_preview(self):
-        if self.preview_result is None:
-            return
-        originals, changes, names, scope, version, selected = self.preview_result
-        parent = self.parent()
-        if (parent.current_layer() != self.layer or parent.query_version != version
-                or (scope == "selected" and set(parent.selected_fids()) != selected)):
-            self.invalidate_preview()
-            self.notice.setText("The layer or selection changed. Preview again.")
-            return
-        if parent.apply_multi_replacements(self.layer, names, originals, changes, scope == "layer"):
-            self.suggestion_timer.stop()
-            if self.suggestion_task is not None:
-                self.suggestion_task.cancel()
-                self.suggestion_task = None
-            self.accept()
-        else:
-            self.invalidate_preview()
-            self.notice.setText(parent.status.text())
-
-
-class AutofillDialog(QDialog):
-    def __init__(self, parent, field_names, selected_count, page_count):
-        super().__init__(parent)
-        self.setWindowTitle("Autofill")
-        self.setStyleSheet(parent.styleSheet())
-        self.resize(420, 260)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Values follow the current table order."))
-        form = QFormLayout()
-        self.scope = QComboBox()
-        self.scope.addItem("Selected rows on this page ({})".format(selected_count), "selected")
-        self.scope.addItem("Entire column on this page ({})".format(page_count), "page")
-        if not selected_count:
-            self.scope.setCurrentIndex(1)
-        self.field = QComboBox()
-        self.field.addItems(field_names)
-        self.mode = QComboBox()
-        self.mode.addItem("Same value", "same")
-        self.mode.addItem("Number sequence", "sequence")
-        self.mode.addItem("Repeat values", "repeat")
-        self.mode.addItem("Set NULL", "null")
-        self.values = QPlainTextEdit()
-        dark_palette(self.values, parent.theme)
-        palette = self.values.palette()
-        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(THEMES[parent.theme]["muted"]))
-        self.values.setPalette(palette)
-        self.step = QLineEdit("1")
-        self.step.setPlaceholderText("e.g. 1")
-        self.step_label = QLabel("Step")
-        form.addRow("Column", self.field)
-        form.addRow("Fill", self.scope)
-        form.addRow("Pattern", self.mode)
-        form.addRow("Value(s)", self.values)
-        form.addRow(self.step_label, self.step)
-        layout.addLayout(form)
-        self.hint = QLabel()
-        self.hint.setWordWrap(True)
-        layout.addWidget(self.hint)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Preview…")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.mode.currentIndexChanged.connect(self.update_mode)
-        self.update_mode()
-
-    def update_mode(self):
-        mode = self.mode.currentData()
-        self.values.ensurePolished()
-        lines = 2 if mode == "repeat" else 1
-        self.values.setFixedHeight(max(72 if mode == "repeat" else 40,
-                                       lines * self.values.fontMetrics().lineSpacing() + 20))
-        self.step.setVisible(mode == "sequence")
-        self.step_label.setVisible(mode == "sequence")
-        self.values.setEnabled(mode != "null")
-        self.hint.setText({"null": "Set every target value to NULL.",
-                           "same": "Enter one value. Empty text and spaces are preserved.",
-                           "sequence": "Enter the starting number and step; numeric fields only.",
-                           "repeat": "Enter one value per line. Values repeat in order."}[mode])
-        self.values.setPlaceholderText({"null": "", "same": "e.g. Residential", "sequence": "e.g. 1",
-                                        "repeat": "e.g. Residential\nCommercial"}[mode])
 
 
 class FinderDialog(QDialog):
@@ -1636,13 +149,19 @@ class FinderDialog(QDialog):
         self.applying_column_layout = False
         self.layout_settings_key = None
         self.layout_fields = []
+        self._column_layout_dirty = True
+        self._rows_were_wrapped = False
         self.pending_column_widths = {}
         self.filter_rows = []
         self.filters_ready = False
         self.pending_cascade_start = None
+        self._stale_value_rows = set()
+        self._populated_columns = set()
         self.table_layer_id = None
         self.result_key = None
         self.result_ids = None
+        self._result_id_set = None
+        self._result_ids_token = None
         self.query_task = None
         self.csv_task = None
         self.query_version = 0
@@ -1650,17 +169,16 @@ class FinderDialog(QDialog):
         self.pending_selection = set()
         self.syncing_map_selection = False
         self.selected_scope_ids = None
+        self._pending_initial_scope = None
         self.nearby_origin_ids = None
         self.nearby_match_ids = None
         self.nearby_task = None
-        self.nearby_preview_task = None
         self.nearby_preview_dialog = None
         self.nearby_version = 0
-        self.nearby_enabled = True
+        self.nearby_enabled = False
         self.preview_label_fields = {}
         self.preview_extents = {}
         self.preview_selection = {}
-        self.preview_distances = {}
         self.preview_width = 320
         self.pending_preview_focus = None
         self.statistics_task = None
@@ -1672,6 +190,7 @@ class FinderDialog(QDialog):
         self.hooked_layer = None
         self.hooked_id = None
         self.hooked_undo_stack = None
+        self.hooked_canvas = None
         self.watched_layer_validity = {}
         self.own_edit = False
         self.edit_failure = None
@@ -1709,9 +228,13 @@ class FinderDialog(QDialog):
         self.selection_filter_timer.setSingleShot(True)
         self.selection_filter_timer.setInterval(100)
         self.selection_filter_timer.timeout.connect(self.run_search)
+        self.canvas_extent_timer = QTimer(self)
+        self.canvas_extent_timer.setSingleShot(True)
+        self.canvas_extent_timer.setInterval(250)
+        self.canvas_extent_timer.timeout.connect(self.on_canvas_extent_timeout)
         self.nearby_update_timer = QTimer(self)
         self.nearby_update_timer.setSingleShot(True)
-        self.nearby_update_timer.setInterval(150)
+        self.nearby_update_timer.setInterval(25)
         self.nearby_update_timer.timeout.connect(self.start_nearby_preview)
         self.statistics_refresh_timer = QTimer(self)
         self.statistics_refresh_timer.setSingleShot(True)
@@ -1766,7 +289,7 @@ class FinderDialog(QDialog):
         self.edit.setMaximumWidth(360)
         row.addWidget(self.edit, 1)
         self.btn_clear_filters = QPushButton("Clear filters")
-        self.btn_clear_filters.setToolTip("Clear column filters, search and selected-only view; keep the map selection")
+        self.btn_clear_filters.setToolTip("Clear column filters, search and feature scope; keep the map selection")
         row.addWidget(self.btn_clear_filters)
         row.addWidget(self.btn_saved_filters)
         row.addStretch(1)
@@ -1789,8 +312,13 @@ class FinderDialog(QDialog):
         self.btn_delete.setAutoDefault(False)
         self.btn_delete.setEnabled(False)
         self.multi_cb = QCheckBox("Multi-select")
-        self.selected_only_cb = QCheckBox("Selected only")
-        self.selected_only_cb.setToolTip("Show the current QGIS selection, updating when the selection changes")
+        self.scope_combo = QComboBox()
+        self.scope_combo.setObjectName("scopePicker")
+        self.scope_combo.addItem("All features", "all")
+        self.scope_combo.addItem("Selected features", "selected")
+        self.scope_combo.addItem("Visible on map", "visible")
+        self.scope_combo.addItem("Edited and new", "edited")
+        self.scope_combo.setToolTip("Show all features, the QGIS selection, features in the map extent, or unsaved edits")
         self.multi_cb.setToolTip("Click rows to toggle selection without holding Ctrl. Turn off to use Ctrl/Shift selection.")
         self.selection_status = QLabel("0 selected")
         self.btn_select.setToolTip("Select all rows on the current page, on the table and map")
@@ -1807,12 +335,12 @@ class FinderDialog(QDialog):
         self.btn_nearby = QPushButton("Features Preview")
         self.btn_nearby.setObjectName("statsToggle")
         self.btn_nearby.setCheckable(True)
-        self.btn_nearby.setChecked(True)
+        self.btn_nearby.setChecked(False)
         self.btn_nearby.setToolTip("Show or hide the layer and selected-feature preview")
         for widget in (self.btn_columns, self.btn_select, self.btn_unselect):
             tools.addWidget(widget)
         tools.addWidget(self.multi_cb)
-        tools.addWidget(self.selected_only_cb)
+        tools.addWidget(self.scope_combo)
         tools.addStretch(1)
         tools.addWidget(self.selection_status)
         tools.addSpacing(6)
@@ -1821,6 +349,7 @@ class FinderDialog(QDialog):
 
         self.table = QTableWidget()
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.horizontalScrollBar().setSingleStep(20)
         self.table.setHorizontalHeader(FilterHeader(Qt.Orientation.Horizontal, self.table))
         self.table.setWordWrap(True)
@@ -1911,7 +440,9 @@ class FinderDialog(QDialog):
         self.status = QLabel("")
         self.status.setObjectName("status")
         bottom.addWidget(self.status, 1)
-        self.btn_zoom = QPushButton("Zoom to all")
+        self.btn_zoom = QPushButton("Zoom to selected")
+        self.btn_zoom.setEnabled(False)
+        self.btn_zoom.setToolTip("Select one or more features in the table or map to zoom")
         self.btn_copy = QPushButton("Copy (for Excel)")
         self.btn_csv = QPushButton("Export CSV")
         for button in (self.btn_copy, self.btn_csv):
@@ -1959,7 +490,7 @@ class FinderDialog(QDialog):
         self.table.itemSelectionChanged.connect(self.on_row_selection)
         self.table.horizontalHeader().sectionResized.connect(self.on_column_resized)
         self.table.horizontalHeader().geometriesChanged.connect(self.schedule_statistics_refresh)
-        self.btn_zoom.clicked.connect(self.zoom_all)
+        self.btn_zoom.clicked.connect(self.zoom_selected)
         self.btn_select.clicked.connect(self.select_all)
         self.btn_unselect.clicked.connect(self.unselect_all)
         self.btn_delete.clicked.connect(self.delete_selected)
@@ -1972,7 +503,7 @@ class FinderDialog(QDialog):
         self.btn_fields.clicked.connect(lambda: self.fields_menu.popup(
             self.btn_fields.mapToGlobal(QPoint(0, self.btn_fields.height()))))
         self.btn_nearby.toggled.connect(self.set_nearby_preview_enabled)
-        self.selected_only_cb.toggled.connect(self.set_selected_scope)
+        self.scope_combo.currentIndexChanged.connect(self.on_scope_changed)
         self.btn_saved_filters.clicked.connect(self.saved_filters_menu)
         self.btn_clear_filters.clicked.connect(self.clear_filters)
         self.multi_cb.toggled.connect(self.set_multi_selection)
@@ -1990,6 +521,10 @@ class FinderDialog(QDialog):
         # Keep the chosen layer while tracking project layer availability.
         QgsProject.instance().layersAdded.connect(self.on_layers_changed)
         QgsProject.instance().layersRemoved.connect(self.on_layers_changed)
+        canvas = self.iface.mapCanvas() if self.iface and hasattr(self.iface, "mapCanvas") else None
+        if canvas is not None and hasattr(canvas, "extentsChanged"):
+            self.hooked_canvas = canvas
+            canvas.extentsChanged.connect(self.on_canvas_extents_changed)
 
     def apply_flags(self):
         flags = (Qt.WindowType.Window | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowSystemMenuHint |
@@ -2073,10 +608,19 @@ class FinderDialog(QDialog):
             else:
                 self.statistics_strip.set_state("ready", summaries=result["summaries"])
 
+        full_layer = (
+            not layer.isEditable()
+            and self.result_key is not None
+            and self.result_key[0] == layer.id()
+            and not self.result_key[1]
+            and self.result_key[2] == "all"
+            and self.result_key[3] is None
+            and self.result_key[4] is None
+        )
         try:
             task = QgsTask.fromFunction("QuickTable: column statistics", collect_column_statistics,
                                         source=QgsVectorLayerFeatureSource(layer), columns=columns,
-                                        ids=ids, on_finished=finished)
+                                        ids=ids, full_layer=full_layer, on_finished=finished)
             task.setDependentLayers([layer])
             self.statistics_task = task
             QgsApplication.taskManager().addTask(task)
@@ -2090,7 +634,11 @@ class FinderDialog(QDialog):
         self.setStyleSheet(build_css(self.theme, self.font_family, self.font_size))
         if self.nearby_preview_dialog is not None and hasattr(self.nearby_preview_dialog, 'canvas'):
             self.nearby_preview_dialog.canvas.setCanvasColor(QColor(THEMES[self.theme]["surface"]))
-            self.nearby_preview_dialog.canvas.refresh()
+            if isinstance(self.nearby_preview_dialog, NearbyPreviewPanel):
+                self.nearby_preview_dialog.refresh_feature_bands()
+                self.nearby_preview_dialog.update_labels()
+            else:
+                self.nearby_preview_dialog.canvas.refresh()
         for button, name in ((self.btn_settings, "settings"), (self.btn_refresh, "refresh"),
                              (self.btn_undo, "undo"), (self.btn_redo, "redo"),
                              (self.btn_copy, "copy"), (self.btn_csv, "export"),
@@ -2249,6 +797,9 @@ class FinderDialog(QDialog):
         ascending.clicked.connect(lambda: self.sort_filter_column(row, Qt.SortOrder.AscendingOrder))
         descending.clicked.connect(lambda: self.sort_filter_column(row, Qt.SortOrder.DescendingOrder))
         self.filter_rows.append(row)
+        style_combo_popup(value, self.theme, self.font_family, self.font_size)
+        style_combo_popup(operator, self.theme, self.font_family, self.font_size)
+        style_combo_popup(number_format, self.theme, self.font_family, self.font_size)
         field.currentIndexChanged.connect(lambda *args, row=row: self.on_filter_field_changed(row))
         operator.currentIndexChanged.connect(lambda *args, row=row: self.on_filter_operator_changed(row))
         value.currentTextChanged.connect(lambda *args, row=row: self.queue_filter_change(row))
@@ -2258,7 +809,8 @@ class FinderDialog(QDialog):
         if self.filters_ready:
             self.populate_filter_field(row)
             self.sync_filter_inputs()
-            self.fill_values(field, value, self.other_filters_expr(row))
+            FinderDialog._init_value_combo(value)
+            self._stale_value_rows.add(id(row))
         self.update_filter_rows_layout()
         return row
 
@@ -2299,6 +851,8 @@ class FinderDialog(QDialog):
         row.number_format.blockSignals(blocked)
         row.widget.setFont(QFont(self.font_family, self.font_size))
         row.widget.setStyleSheet(self.styleSheet())
+        if id(row) in self._stale_value_rows:
+            self._reload_filter_row_values(row)
         row.choices.refresh_choices()
         if position is None:
             x = header.sectionViewportPosition(column) if column >= 0 else 0
@@ -2349,6 +903,7 @@ class FinderDialog(QDialog):
         if task is not None:
             task.cancel()
         row.value.reset_choices()
+        self._stale_value_rows.discard(id(row))
         self.filter_rows.remove(row)
         row.widget.hide()
         row.widget.deleteLater()
@@ -2360,6 +915,7 @@ class FinderDialog(QDialog):
     def clear_filter_rows(self):
         for row in list(self.filter_rows):
             self.remove_filter_row(row, refresh=False)
+        self._stale_value_rows.clear()
 
     def update_filter_rows_layout(self):
         active_columns = set()
@@ -2420,7 +976,6 @@ class FinderDialog(QDialog):
             row.upper.setVisible(operation == "Between")
             row.upper.setEnabled(active)
             row.value.lineEdit().setPlaceholderText("From (inclusive)" if operation == "Between" else "Type or choose a value")
-            style_combo_popup(row.value, self.theme, self.font_family, self.font_size)
         self.update_filter_rows_layout()
 
 
@@ -2440,9 +995,21 @@ class FinderDialog(QDialog):
         # Schema changes must never leave a table with no visible columns.
         if self.fields and all(name in hidden for name in self.fields):
             hidden.discard(self.fields[0])
+        visible_unpopulated = False
         for column, name in enumerate(self.fields):
-            self.table.setColumnHidden(column, name in hidden)
+            is_hidden = name in hidden
+            self.table.setColumnHidden(column, is_hidden)
+            if not is_hidden and column not in self._populated_columns:
+                visible_unpopulated = True
         self.btn_columns.setEnabled(bool(self.fields))
+        if (
+            visible_unpopulated
+            and not self.applying_column_layout
+            and self.result_ids is not None
+            and self.table.columnCount() == len(self.fields)
+            and self.table.rowCount() > 0
+        ):
+            self.render_page()
 
     def wrapped_fields(self):
         key = self.column_settings_key()
@@ -2544,17 +1111,17 @@ class FinderDialog(QDialog):
         try:
             self.layout_settings_key = key
             self.layout_fields = list(self.fields)
+            self._column_layout_dirty = False
             widths = self.saved_column_widths(key)
             wrapped = self.wrapped_fields()
             number_formats = self.number_formats()
-            visible = [column for column in range(len(self.fields)) if not self.table.isColumnHidden(column)]
+            layer = self.current_layer()
             # Keep viewport expansion from being saved as an explicit field width.
             self.table.horizontalHeader().setStretchLastSection(False)
             for column, name in enumerate(self.fields):
                 if name not in self.column_delegates:
                     self.column_delegates[name] = ColumnTextDelegate(self.table)
                 delegate = self.column_delegates[name]
-                layer = self.current_layer()
                 delegate.field_kind = field_kind(layer.fields().field(name)) if layer else "text"
                 delegate.number_format = number_formats.get(name, "original")
                 delegate.value_map = []
@@ -2590,13 +1157,29 @@ class FinderDialog(QDialog):
         if self.table.columnCount() != len(self.fields):
             return
         wrapped = self.wrapped_fields()
-        if any(name in wrapped and not self.table.isColumnHidden(column)
-               for column, name in enumerate(self.fields)):
+        has_wrapped = any(name in wrapped and not self.table.isColumnHidden(column)
+                          for column, name in enumerate(self.fields))
+        if has_wrapped:
             self.table.resizeRowsToContents()
+            self._rows_were_wrapped = True
         else:
             height = max(23, QFontMetrics(QFont(self.font_family, self.font_size)).height() + 10)
-            for row in range(self.table.rowCount()):
-                self.table.setRowHeight(row, height)
+            self.table.verticalHeader().setDefaultSectionSize(height)
+            if self._rows_were_wrapped:
+                for row in range(self.table.rowCount()):
+                    self.table.setRowHeight(row, height)
+            self._rows_were_wrapped = False
+        self.table.viewport().update()
+
+    def resize_table_row(self, row, column=None):
+        """Resize one edited row when wrapping is enabled on a visible column."""
+        if self.layout_settings_key != self.column_settings_key() or self.table.columnCount() != len(self.fields):
+            return
+        wrapped = self.wrapped_fields()
+        if any(name in wrapped and not self.table.isColumnHidden(c) for c, name in enumerate(self.fields)):
+            if column is None or (column < len(self.fields) and self.fields[column] in wrapped and not self.table.isColumnHidden(column)):
+                self.table.resizeRowToContents(row)
+                self._rows_were_wrapped = True
         self.table.viewport().update()
 
     def choose_columns(self):
@@ -2657,6 +1240,7 @@ class FinderDialog(QDialog):
         self.statistics_refresh_timer.stop()
         self.cancel_statistics()
         self.selection_filter_timer.stop()
+        self.canvas_extent_timer.stop()
         self.cancel_nearby()
         self.column_layout_timer.stop()
         self.save_column_widths()
@@ -2672,20 +1256,30 @@ class FinderDialog(QDialog):
                 sig.disconnect(slot)
             except (TypeError, RuntimeError):
                 pass
+        if self.hooked_canvas is not None and hasattr(self.hooked_canvas, "extentsChanged"):
+            try:
+                self.hooked_canvas.extentsChanged.disconnect(self.on_canvas_extents_changed)
+            except (TypeError, RuntimeError):
+                pass
+            self.hooked_canvas = None
         self.unhook_layer()
         self.timer.stop()
         self.close()
         self.deleteLater()
 
     # ---------- layer list / active layer ----------
-    def refresh(self):
+    def refresh(self, initial_scope=None):
         """Use QGIS's current vector layer only to initialize the layer choice."""
-        current = self.current_layer()
-        active = self.iface.activeLayer()
-        prefer = current.id() if current is not None else (
-            active.id() if active is not None and active.type() == QgsMapLayer.LayerType.VectorLayer and active.isValid() else None)
-        self.rebuild_layer_list(prefer)
-        self.edit.setFocus()
+        self._pending_initial_scope = initial_scope
+        try:
+            current = self.current_layer()
+            active = self.iface.activeLayer()
+            prefer = current.id() if current is not None else (
+                active.id() if active is not None and active.type() == QgsMapLayer.LayerType.VectorLayer and active.isValid() else None)
+            self.rebuild_layer_list(prefer)
+            self.edit.setFocus()
+        finally:
+            self._pending_initial_scope = None
 
     def rebuild_layer_list(self, prefer_id=None, refresh_current=True):
         keep = prefer_id or self.layer.currentData()
@@ -2748,12 +1342,14 @@ class FinderDialog(QDialog):
 
     def on_layer_changed(self, *args):
         self.pending_preview_focus = None
+        self._column_layout_dirty = True
         self.selection_filter_timer.stop()
+        self.canvas_extent_timer.stop()
         self.cancel_nearby()
-        self.selected_only_cb.blockSignals(True)
-        self.selected_only_cb.setChecked(False)
-        self.selected_only_cb.blockSignals(False)
-        self.selected_scope_ids = None
+        if self._pending_initial_scope:
+            self.set_scope(self._pending_initial_scope, run=False)
+        else:
+            self.reset_scope_control()
         self.filter_timer.stop()
         self.pending_cascade_start = None
         self.search_timer.stop()
@@ -2779,6 +1375,11 @@ class FinderDialog(QDialog):
                     getattr(self.hooked_layer, name).disconnect(self.schedule_refresh)
                 except (TypeError, RuntimeError, AttributeError):
                     pass
+            for name in EDIT_STATE_SIGNALS:
+                try:
+                    getattr(self.hooked_layer, name).disconnect(self.sync_edit_state)
+                except (TypeError, RuntimeError, AttributeError):
+                    pass
         self.hooked_layer = None
         self.hooked_id = None
 
@@ -2790,6 +1391,11 @@ class FinderDialog(QDialog):
         for name in LAYER_SIGNALS:
             try:
                 getattr(layer, name).connect(self.schedule_refresh)
+            except (TypeError, RuntimeError, AttributeError):
+                pass
+        for name in EDIT_STATE_SIGNALS:
+            try:
+                getattr(layer, name).connect(self.sync_edit_state)
             except (TypeError, RuntimeError, AttributeError):
                 pass
         self.hooked_layer = layer
@@ -2831,18 +1437,22 @@ class FinderDialog(QDialog):
     def soft_refresh(self, *args):
         """Re-read fields and value lists, keeping the current choices if they still exist."""
         self.edit_failure = None
+        self._column_layout_dirty = True
         self.invalidate_nearby_after_layer_change()
         self.invalidate_results()
         if self.current_layer() is None:
             self.hook_layer()
             self.load_fields(keep=False)
             return
+        if self._pending_initial_scope:
+            self.set_scope(self._pending_initial_scope, run=False)
         self.load_fields(keep=True)
 
     # ---------- fields and value lists ----------
     def load_fields(self, keep=False):
         layer = self.current_layer()
         self.fields = list(layer.fields().names()) if layer else []
+        self.update_scope_options()
         if not keep:
             self.clear_filter_rows()
         for row in list(self.filter_rows):
@@ -2856,13 +1466,25 @@ class FinderDialog(QDialog):
         self.run_search()
         self.sync_edit_state()
 
+    def _reload_filter_row_values(self, row, preserve=True):
+        """Reload unique value suggestions for a single filter row."""
+        self._stale_value_rows.discard(id(row))
+        text = row.value.currentText()
+        self.fill_values(row.field, row.value, self.other_filters_expr(row))
+        if preserve:
+            self.restore_value(row.value, text)
+
     def reload_value_lists(self, start=0, preserve=True):
         for index in range(start, len(self.filter_rows)):
-            row = self.filter_rows[index]
-            text = row.value.currentText()
-            self.fill_values(row.field, row.value, self.other_filters_expr(row))
-            if preserve:
-                self.restore_value(row.value, text)
+            filter_row = self.filter_rows[index]
+            if filter_row.widget.isVisible():
+                self._reload_filter_row_values(filter_row, preserve=preserve)
+            else:
+                self.value_versions[filter_row.value] = self.value_versions.get(filter_row.value, 0) + 1
+                task = self.value_tasks.pop(filter_row.value, None)
+                if task is not None:
+                    task.cancel()
+                self._stale_value_rows.add(id(filter_row))
 
     @staticmethod
     def restore_value(combo, text):
@@ -2883,19 +1505,26 @@ class FinderDialog(QDialog):
     def natural_key(text):
         return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", text)]
 
+    @staticmethod
+    def _init_value_combo(value_combo):
+        """Reset combo items to the unloaded ALL_VALUES placeholder without scanning."""
+        blocked = value_combo.blockSignals(True)
+        try:
+            value_combo.clear()
+            value_combo.addItem(ALL_VALUES, None)
+            value_combo.setCurrentIndex(0)
+        finally:
+            value_combo.blockSignals(blocked)
+        if isinstance(value_combo, CheckableValueCombo):
+            value_combo.update_checked_text()
+
     def fill_values(self, field_combo, value_combo, base_expr):
         version = self.value_versions.get(value_combo, 0) + 1
         self.value_versions[value_combo] = version
         previous = self.value_tasks.pop(value_combo, None)
         if previous is not None:
             previous.cancel()
-        value_combo.blockSignals(True)
-        value_combo.clear()
-        value_combo.addItem(ALL_VALUES, None)
-        value_combo.setCurrentIndex(0)
-        value_combo.blockSignals(False)
-        if isinstance(value_combo, CheckableValueCombo):
-            value_combo.update_checked_text()
+        FinderDialog._init_value_combo(value_combo)
         value_combo.setToolTip("")
         layer = self.current_layer()
         name = field_combo.currentText()
@@ -2917,12 +1546,16 @@ class FinderDialog(QDialog):
             value_combo.setToolTip("")
             current = value_combo.currentText()
             value_combo.blockSignals(True)
-            value_combo.clear()
-            value_combo.addItem(ALL_VALUES, None)
-            for text in sorted(values, key=self.natural_key):
-                value_combo.addItem(text, values[text])
-            self.restore_value(value_combo, current)
-            value_combo.blockSignals(False)
+            value_combo.setUpdatesEnabled(False)
+            try:
+                value_combo.clear()
+                value_combo.addItem(ALL_VALUES, None)
+                for text in sorted(values, key=self.natural_key):
+                    value_combo.addItem(text, values[text])
+                self.restore_value(value_combo, current)
+            finally:
+                value_combo.setUpdatesEnabled(True)
+                value_combo.blockSignals(False)
             if truncated:
                 value_combo.setToolTip(
                     "Suggestions from the first {} matching features. Type to search the full layer."
@@ -2993,8 +1626,24 @@ class FinderDialog(QDialog):
         row.choices.items.clear()
         row.choices.list.blockSignals(False)
         self.sync_filter_inputs()
-        self.fill_values(row.field, row.value, self.other_filters_expr(row))
-        self.queue_filter_change(row)
+        if row.widget.isVisible():
+            self._stale_value_rows.discard(id(row))
+            self.fill_values(row.field, row.value, self.other_filters_expr(row))
+        else:
+            self.value_versions[row.value] = self.value_versions.get(row.value, 0) + 1
+            task = self.value_tasks.pop(row.value, None)
+            if task is not None:
+                task.cancel()
+            FinderDialog._init_value_combo(row.value)
+            self._stale_value_rows.add(id(row))
+        try:
+            expr_changed = self.result_key is None or self.build_expr() != self.result_key[1]
+        except ValueError:
+            expr_changed = True
+        if expr_changed:
+            self.queue_filter_change(row)
+        else:
+            self.update_filter_rows_layout()
 
     def on_filter_operator_changed(self, row):
         self.sync_filter_inputs()
@@ -3029,26 +1678,135 @@ class FinderDialog(QDialog):
         self.search_timer.stop()
         self.filter_timer.stop()
         self.selection_filter_timer.stop()
+        self.canvas_extent_timer.stop()
         self.pending_cascade_start = None
-        self.selected_only_cb.blockSignals(True)
-        self.selected_only_cb.setChecked(False)
-        self.selected_only_cb.blockSignals(False)
-        self.selected_scope_ids = None
+        self.reset_scope_control()
         self.edit.blockSignals(True)
         self.edit.clear()
         self.edit.blockSignals(False)
         self.clear_filter_rows()
         self.run_search()
 
-    def set_selected_scope(self, enabled):
+    def current_scope(self):
+        """Return the active table scope key ('all', 'selected', 'visible', or 'edited')."""
+        return self.scope_combo.currentData() or "all"
+
+    def reset_scope_control(self):
+        """Reset the scope selector to All features without emitting a search."""
+        self.scope_combo.blockSignals(True)
+        index = self.scope_combo.findData("all")
+        self.scope_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.scope_combo.blockSignals(False)
+        self.selected_scope_ids = None
+
+    def update_scope_options(self):
+        """Enable map-extent filtering only for spatial layers."""
+        layer = self.current_layer()
+        spatial = bool(layer is not None and layer.isSpatial())
+        idx = self.scope_combo.findData("visible")
+        model = self.scope_combo.model()
+        if idx >= 0 and hasattr(model, "item"):
+            item = model.item(idx)
+            if item is not None:
+                flags = item.flags()
+                if spatial:
+                    item.setFlags(flags | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                else:
+                    item.setFlags(flags & ~Qt.ItemFlag.ItemIsEnabled)
+        if not spatial and self.current_scope() == "visible":
+            self.reset_scope_control()
+
+    def set_scope(self, scope, run=True):
+        """Set the active scope ('all', 'selected', 'visible', or 'edited')."""
         layer = self.current_layer()
         self.selection_filter_timer.stop()
-        self.selected_scope_ids = tuple(sorted(layer.selectedFeatureIds())) if enabled and layer else None
+        self.canvas_extent_timer.stop()
+        if scope == "visible" and (layer is None or not layer.isSpatial()):
+            scope = "all"
+        idx = self.scope_combo.findData(scope)
+        if idx < 0:
+            idx = self.scope_combo.findData("all")
+            scope = "all"
+        self.scope_combo.blockSignals(True)
+        self.scope_combo.setCurrentIndex(max(0, idx))
+        self.scope_combo.blockSignals(False)
+        self.selected_scope_ids = tuple(sorted(layer.selectedFeatureIds())) if scope == "selected" and layer else None
         self.page = 0
-        self.run_search()
+        if run:
+            self.run_search()
+
+    def on_scope_changed(self, *args):
+        self.set_scope(self.current_scope(), run=True)
+
+    def set_selected_scope(self, enabled):
+        """Compatibility helper for toggling the Selected features scope."""
+        self.set_scope("selected" if enabled else "all")
+
+    def canvas_layer_extent(self, layer):
+        """Return the active QGIS map canvas extent transformed into the layer's CRS."""
+        if layer is None or not layer.isSpatial():
+            return ()
+        canvas = self.iface.mapCanvas() if self.iface and hasattr(self.iface, "mapCanvas") else None
+        if canvas is None or not hasattr(canvas, "extent"):
+            return ()
+        extent = canvas.extent()
+        if extent is None or extent.isNull() or extent.isEmpty():
+            return ()
+        if hasattr(canvas, "mapSettings"):
+            canvas_crs = canvas.mapSettings().destinationCrs()
+            layer_crs = layer.crs()
+            if canvas_crs.isValid() and layer_crs.isValid() and canvas_crs != layer_crs:
+                extent = QgsCoordinateTransform(canvas_crs, layer_crs, QgsProject.instance()).transformBoundingBox(extent)
+        if extent.isNull() or extent.isEmpty():
+            return ()
+        return (float(extent.xMinimum()), float(extent.yMinimum()),
+                float(extent.xMaximum()), float(extent.yMaximum()))
+
+    def active_scope_filter(self, layer):
+        """Return (filter_fids, filter_rect) for the currently selected scope."""
+        scope = self.current_scope()
+        if scope == "selected":
+            self.selected_scope_ids = tuple(sorted(layer.selectedFeatureIds())) if layer else ()
+            return self.selected_scope_ids, None
+        self.selected_scope_ids = None
+        if scope == "edited":
+            return edited_feature_ids(layer), None
+        if scope == "visible":
+            return None, self.canvas_layer_extent(layer)
+        return None, None
+
+    def on_canvas_extents_changed(self, *args):
+        if not self.closing and self.isVisible() and self.current_scope() == "visible":
+            self.canvas_extent_timer.start()
+
+    def on_canvas_extent_timeout(self):
+        if not self.closing and self.isVisible() and self.current_scope() == "visible":
+            self.run_search()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self.closing and (self.current_scope() == "visible"
+                                 or (self.result_ids is None and self.current_layer() is not None
+                                     and self.query_task is None and not self.timer.isActive())):
+            self.run_search()
 
     def invalidate_nearby_after_layer_change(self):
         self.schedule_nearby_preview()
+
+    def invalidate_nearby_after_attribute_edit(self, field_name):
+        """Keep existing touching geometry intact after attribute-only edits."""
+        had_pending = self.nearby_task is not None or self.nearby_update_timer.isActive()
+        keep_preview = (not self.closing and self.nearby_enabled
+                        and isinstance(self.nearby_preview_dialog, (EmptyPreviewPanel, NearbyPreviewPanel))
+                        and self.nearby_preview_dialog.layer == self.current_layer())
+        self.cancel_nearby(keep_preview=keep_preview)
+        if had_pending and not self.closing and self.nearby_enabled:
+            self.schedule_nearby_preview()
+            return
+        preview = self.nearby_preview_dialog
+        if isinstance(preview, NearbyPreviewPanel) and preview.layer == self.current_layer():
+            if preview.label_field.currentData() == field_name:
+                preview.update_labels(refresh_values=True)
 
     def cancel_nearby(self, keep_preview=False):
         self.nearby_version += 1
@@ -3056,19 +1814,12 @@ class FinderDialog(QDialog):
         if self.nearby_task is not None:
             self.nearby_task.cancel()
             self.nearby_task = None
-        if keep_preview:
-            if self.nearby_preview_task is not None:
-                self.nearby_preview_task.cancel()
-                self.nearby_preview_task = None
-        else:
+        if not keep_preview:
             self.close_nearby_preview()
         self.nearby_origin_ids = None
         self.nearby_match_ids = None
 
     def close_nearby_preview(self):
-        if self.nearby_preview_task is not None:
-            self.nearby_preview_task.cancel()
-            self.nearby_preview_task = None
         if self.nearby_preview_dialog is not None:
             preview = self.nearby_preview_dialog
             self.nearby_preview_dialog = None
@@ -3079,35 +1830,25 @@ class FinderDialog(QDialog):
             preview.setParent(None)
             preview.deleteLater()
 
-    def show_nearby_preview(self, layer, selected_ids, nearby_ids, version):
-        def finished(exception, snapshot=None):
-            if self.nearby_preview_task is not task:
-                return
-            self.nearby_preview_task = None
-            if (self.closing or not self.nearby_enabled or version != self.nearby_version
-                    or self.current_layer() != layer or set(layer.selectedFeatureIds()) != set(selected_ids)):
-                return
-            if exception is not None or snapshot is None:
-                if exception is not None:
-                    self.status.setText("Nearby preview could not be displayed: {}".format(exception))
-                return
+    def apply_nearby_preview_snapshot(self, layer, selected_ids, nearby_ids, snapshot, nearby_limited=False):
+        """Render a completed nearby-preview WKB snapshot on the sidebar canvas."""
+        current_selection = frozenset(selected_ids)
+        recenter = self.preview_selection.get(layer.id()) != current_selection
+        self.preview_selection[layer.id()] = current_selection
+        existing = self.nearby_preview_dialog
+        if isinstance(existing, NearbyPreviewPanel) and existing.layer == layer:
+            extent = QgsRectangle(existing.canvas.extent())
+            self.preview_extents[layer.id()] = extent
+            existing.update_snapshot(snapshot, len(nearby_ids), extent, recenter,
+                                     nearby_limited=nearby_limited)
+        else:
             self.close_nearby_preview()
-            current_selection = frozenset(selected_ids)
-            recenter = self.preview_selection.get(layer.id()) != current_selection
             preview = NearbyPreviewPanel(self, layer, snapshot, len(nearby_ids),
-                                         self.preview_extents.get(layer.id()), recenter)
-            self.preview_selection[layer.id()] = current_selection
+                                         self.preview_extents.get(layer.id()), recenter,
+                                         nearby_limited=nearby_limited)
             self.display_preview_panel(preview)
-        try:
-            task = QgsTask.fromFunction("QuickTable: nearby preview", collect_nearby_preview,
-                source=QgsVectorLayerFeatureSource(layer), selected_ids=selected_ids,
-                nearby_ids=nearby_ids, on_finished=finished)
-            task.setDependentLayers([layer])
-            self.nearby_preview_task = task
-            QgsApplication.taskManager().addTask(task)
-        except Exception as exc:
-            self.nearby_preview_task = None
-            self.status.setText("Nearby preview could not be started: {}".format(exc))
+        self.nearby_origin_ids = selected_ids
+        self.nearby_match_ids = nearby_ids
 
     def set_nearby_preview_enabled(self, enabled):
         self.nearby_enabled = bool(enabled)
@@ -3128,7 +1869,7 @@ class FinderDialog(QDialog):
         layer = self.current_layer()
         keep_preview = (not self.closing and self.nearby_enabled and layer is not None
                         and bool(layer.selectedFeatureIds())
-                        and isinstance(self.nearby_preview_dialog, EmptyPreviewPanel)
+                        and isinstance(self.nearby_preview_dialog, (EmptyPreviewPanel, NearbyPreviewPanel))
                         and self.nearby_preview_dialog.layer == layer)
         self.cancel_nearby(keep_preview=keep_preview)
         if (not self.closing and self.nearby_enabled and layer is not None and layer.isSpatial()):
@@ -3143,10 +1884,6 @@ class FinderDialog(QDialog):
             self.display_preview_panel(EmptyPreviewPanel(self, layer))
             return
         version = self.nearby_version
-        distance, units = self.preview_distances.get(layer.id(), (0, Qgis.DistanceUnit.Meters))
-        crs = layer.crs()
-        target_units = Qgis.DistanceUnit.Meters if crs.isGeographic() else crs.mapUnits()
-        distance = distance * QgsUnitTypes.fromUnitToUnitFactor(units, target_units) if distance else None
 
         def finished(exception, result=None):
             if self.nearby_task is not task:
@@ -3160,14 +1897,18 @@ class FinderDialog(QDialog):
                 return
             if result is None:
                 return
-            self.nearby_origin_ids = ids
-            self.nearby_match_ids = tuple(result[0])
-            self.show_nearby_preview(layer, ids, self.nearby_match_ids, version)
+            raw_matches, scan_limited, snapshot = result
+            raw_matches = tuple(raw_matches)
+            nearby_limited = bool(scan_limited) or len(raw_matches) > MAX_NEARBY_PREVIEW
+            matches = raw_matches[:MAX_NEARBY_PREVIEW]
+            self.apply_nearby_preview_snapshot(layer, ids, matches, snapshot, nearby_limited=nearby_limited)
 
         try:
             task = QgsTask.fromFunction("QuickTable: find nearby features", collect_nearby_task,
-                source=QgsVectorLayerFeatureSource(layer), selected_ids=ids, distance=distance,
-                source_crs=crs, transform_context=QgsProject.instance().transformContext(), on_finished=finished)
+                source=QgsVectorLayerFeatureSource(layer), selected_ids=ids, distance=None,
+                max_matches=MAX_NEARBY_PREVIEW + 1, max_candidates=MAX_NEARBY_CANDIDATES,
+                preview_limit=MAX_NEARBY_PREVIEW, label_field=self.preview_label_fields.get(layer.id()),
+                on_finished=finished)
             task.setDependentLayers([layer])
             self.nearby_task = task
             QgsApplication.taskManager().addTask(task)
@@ -3242,6 +1983,7 @@ class FinderDialog(QDialog):
             hidden = [field for field in saved["hidden_columns"] if field in self.fields]
             missing.extend(str(field) for field in saved["hidden_columns"] if field not in self.fields)
             QSettings().setValue(self.column_settings_key(), hidden)
+            self._column_layout_dirty = True
             self.apply_column_visibility()
         if "sort_field" in saved:
             sort_field = saved.get("sort_field")
@@ -3287,8 +2029,6 @@ class FinderDialog(QDialog):
     # ---------- filtering ----------
     def build_expr(self):
         parts = [self.part_expr(row.field, row.value) for row in self.filter_rows]
-        if self.selected_scope_ids is not None:
-            parts.append("$id IN ({})".format(",".join(str(int(fid)) for fid in self.selected_scope_ids)) if self.selected_scope_ids else "FALSE")
         text = self.edit.text().strip()
         if text and self.fields:
             pattern = QgsExpression.quotedString(text)
@@ -3302,6 +2042,17 @@ class FinderDialog(QDialog):
         self.table.clear()
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
+        self._populated_columns.clear()
+
+    def result_id_set(self):
+        """Return a cached set of current result_ids for O(1) membership checks."""
+        if self.result_ids is None:
+            return None
+        token = (self.query_version, id(self.result_ids), len(self.result_ids))
+        if self._result_id_set is None or self._result_ids_token != token:
+            self._result_id_set = set(self.result_ids)
+            self._result_ids_token = token
+        return self._result_id_set
 
     def invalidate_results(self):
         self.query_version += 1
@@ -3314,13 +2065,15 @@ class FinderDialog(QDialog):
         if task is not None:
             task.cancel()
         self.result_ids = None
+        self._result_id_set = None
+        self._result_ids_token = None
 
     def update_pager(self):
         size = self.page_size.currentData()
         self.btn_select.setText("Select page" if size else "Select all")
-        self.btn_zoom.setText("Zoom to page" if size else "Zoom to all")
         self.btn_select.setToolTip("Select every row on this page on the table and map" if size else
                                    "Select all matching results on the table and map")
+        self.update_zoom_button()
         if self.result_ids is None:
             self.btn_previous.setEnabled(False)
             self.btn_next.setEnabled(False)
@@ -3375,6 +2128,7 @@ class FinderDialog(QDialog):
             query = QgsExpression(expression) if expression else None
             if query is not None and query.hasParserError():
                 raise ValueError(query.parserErrorString())
+            filter_fids, filter_rect = self.active_scope_filter(layer)
         except Exception as e:
             self.invalidate_results()
             self.result_key = None
@@ -3382,7 +2136,7 @@ class FinderDialog(QDialog):
             self.clear_results("Filter problem: {}".format(e))
             return
         sort_field = self.sort_field if self.sort_field in self.fields else None
-        key = (layer.id(), expression, sort_field, self.sort_order)
+        key = (layer.id(), expression, self.current_scope(), filter_fids, filter_rect, sort_field, self.sort_order)
         if key == self.result_key:
             if self.result_ids is not None:
                 self.render_page()
@@ -3391,6 +2145,12 @@ class FinderDialog(QDialog):
                 return
 
         previous_selection = set(self.selected_fids()) | self.pending_selection if self.table_layer_id == layer.id() else set()
+        preserve_table = (
+            self.table_layer_id == layer.id()
+            and self.layout_fields == list(self.fields)
+            and self.table.columnCount() == len(self.fields)
+            and len(self.fields) > 0
+        )
         self.invalidate_results()
         if key != self.result_key:
             self.page = 0
@@ -3413,16 +2173,23 @@ class FinderDialog(QDialog):
                 self.clear_results("Search canceled. Use Refresh lists to retry.")
                 return
             self.result_ids = result[0]
+            self._result_id_set = None
+            self._result_ids_token = None
             self.render_page()
 
         try:
             source = QgsVectorLayerFeatureSource(layer)
             task = QgsTask.fromFunction("QuickTable: find matches", collect_feature_ids_task,
                                         source=source, expression=expression, sort_field=sort_field,
-                                        ascending=self.sort_order == Qt.SortOrder.AscendingOrder, on_finished=finished)
+                                        ascending=self.sort_order == Qt.SortOrder.AscendingOrder,
+                                        filter_fids=filter_fids, filter_rect=filter_rect, on_finished=finished)
             task.setDependentLayers([layer])
             self.query_task = task
-            self.clear_results("Finding matching records…")
+            if preserve_table:
+                self.status.setText("Finding matching records…")
+                self.update_pager()
+            else:
+                self.clear_results("Finding matching records…")
             QgsApplication.taskManager().addTask(task)
         except Exception as e:
             self.invalidate_results()
@@ -3447,66 +2214,130 @@ class FinderDialog(QDialog):
         previous_selection = set(layer.selectedFeatureIds())
         self.pending_selection.clear()
         self.table_layer_id = layer.id() if layer else None
+        same_schema = (
+            not self._column_layout_dirty
+            and self.table.columnCount() == len(self.fields)
+            and self.layout_fields == list(self.fields)
+            and self.layout_settings_key == self.column_settings_key()
+        )
         previous_column_layout = self.applying_column_layout
         self.applying_column_layout = True
         self.table.blockSignals(True)
+        self.table.setUpdatesEnabled(False)
         try:
-            self.clear_table()
             if not layer:
+                self.clear_table()
                 self.status.setText("No vector layer selected")
                 return
 
-            self.table.setColumnCount(len(self.fields))
-            self.table.setHorizontalHeaderLabels(self.fields)
+            if same_schema:
+                self.table.setSortingEnabled(False)
+            else:
+                self.clear_table()
+                self.table.setColumnCount(len(self.fields))
+                self.table.setHorizontalHeaderLabels(self.fields)
+                self.apply_column_visibility()
+
+            num_fields = len(self.fields)
+            visible_columns = [c for c in range(num_fields) if not self.table.isColumnHidden(c)]
+            visible_set = set(visible_columns)
+
+            req = QgsFeatureRequest().setFilterFids(list(page_ids))
+            req.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+            req.setSubsetOfAttributes(visible_columns)
+            if page_ids:
+                iterator = layer.getFeatures(req)
+                try:
+                    features = {feature.id(): feature for feature in iterator}
+                finally:
+                    iterator.close()
+            else:
+                features = {}
+            page_features = [(fid, features[fid]) for fid in page_ids if fid in features]
+
             self.table.verticalHeader().setMinimumWidth(
                 max(42, self.table.fontMetrics().horizontalAdvance(str(len(self.result_ids))) + 20))
-            self.apply_column_visibility()
+            self.table.setRowCount(len(page_features))
+
             form = layer.editFormConfig()
             layer_fields = layer.fields()
             edit_buffer = layer.editBuffer() if layer.isEditable() else None
             changed_attributes = edit_buffer.changedAttributeValues() if edit_buffer else {}
-            readonly_columns = {c for c in range(len(self.fields))
+            readonly_columns = {c for c in visible_columns
                                 if form.readOnly(c) or (hasattr(layer_fields[c], "isReadOnly")
                                                         and layer_fields[c].isReadOnly())}
+            edited_bg = QBrush(QColor("#365345" if self.theme == "dark" else "#d8efdf"))
+            clear_bg = QBrush()
+            base_flags = QTableWidgetItem().flags()
 
-            req = QgsFeatureRequest().setFilterFids(list(page_ids))
-            req.setFlags(QgsFeatureRequest.Flag.NoGeometry)
-            features = {feature.id(): feature for feature in layer.getFeatures(req)} if page_ids else {}
-
-            r = 0
-            for fid in page_ids:
-                feat = features.get(fid)
-                if feat is None:
-                    continue
+            for r, (fid, feat) in enumerate(page_features):
                 attrs = feat.attributes()
-                self.table.insertRow(r)
-                self.table.setVerticalHeaderItem(r, QTableWidgetItem(str(window.start + r + 1)))
-                for c in range(len(self.fields)):
+                row_label = str(window.start + r + 1)
+                vitem = self.table.verticalHeaderItem(r) if same_schema else None
+                if vitem is not None:
+                    vitem.setText(row_label)
+                else:
+                    self.table.setVerticalHeaderItem(r, QTableWidgetItem(row_label))
+                feat_changed = changed_attributes.get(fid, {})
+                for c in range(num_fields):
+                    if c not in visible_set:
+                        if c == 0:
+                            # Column 0 item carries the row's FID in UserRole even when hidden.
+                            existing = self.table.item(r, 0) if same_schema else None
+                            reused = isinstance(existing, SortItem)
+                            item = existing if reused else SortItem("")
+                            if reused and item.text():
+                                item.setText("")
+                            item.setData(Qt.ItemDataRole.UserRole, fid)
+                            if not reused:
+                                self.table.setItem(r, 0, item)
+                        continue
                     v = attrs[c] if c < len(attrs) else None
-                    s = attribute_text(v)
-                    item = SortItem(s)
+                    text = attribute_text(v)
+                    existing = self.table.item(r, c) if same_schema else None
+                    reused = isinstance(existing, SortItem)
+                    item = existing if reused else SortItem(text)
+                    if reused:
+                        item.setText(text)
                     item.setData(NULL_ROLE, v is None or v == NULL)
-                    if c in changed_attributes.get(fid, {}):
-                        item.setBackground(QColor("#365345" if self.theme == "dark" else "#d8efdf"))
-                        item.setToolTip("Unsaved attribute change")
+                    if c in feat_changed:
+                        item.setBackground(edited_bg)
+                        tooltip = "Unsaved attribute change"
+                    else:
+                        if reused:
+                            item.setBackground(clear_bg)
+                        tooltip = ""
+                    flags = base_flags & ~Qt.ItemFlag.ItemIsEditable if c in readonly_columns else base_flags
                     if c in readonly_columns:
-                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                        item.setToolTip("This field is read-only in the layer configuration or data source")
+                        tooltip = "This field is read-only in the layer configuration or data source"
+                    if reused or c in readonly_columns:
+                        item.setFlags(flags)
+                    if reused or tooltip:
+                        item.setToolTip(tooltip)
                     if c == 0:
-                        item.setData(Qt.ItemDataRole.UserRole, feat.id())
-                    self.table.setItem(r, c, item)
-                r += 1
+                        item.setData(Qt.ItemDataRole.UserRole, fid)
+                    elif reused:
+                        item.setData(Qt.ItemDataRole.UserRole, None)
+                    if not reused:
+                        self.table.setItem(r, c, item)
+            self._populated_columns = visible_set
+            r = len(page_features)
 
             if self.sort_field in self.fields:
                 self.table.horizontalHeader().setSortIndicator(self.fields.index(self.sort_field), self.sort_order)
             self.table.horizontalHeader().setSortIndicatorShown(self.sort_field in self.fields)
-            self.apply_column_layout()
+            if same_schema:
+                self.resize_wrapped_rows()
+            else:
+                self.apply_column_layout()
             pending = self.pending_added_field
             self.pending_added_field = None
             if pending and pending[0] == layer.id() and pending[1] in self.fields:
                 column = self.fields.index(pending[1])
                 if self.table.rowCount():
-                    self.table.scrollToItem(self.table.item(0, column), QAbstractItemView.ScrollHint.EnsureVisible)
+                    target = self.table.item(0, column)
+                    if target is not None:
+                        self.table.scrollToItem(target, QAbstractItemView.ScrollHint.EnsureVisible)
                 else:
                     self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().maximum())
             self.select_table_fids(previous_selection)
@@ -3521,34 +2352,56 @@ class FinderDialog(QDialog):
             self.clear_table()
             self.status.setText("Filter problem: {}  (try Refresh lists or Clear filters)".format(e))
         finally:
+            self.table.setUpdatesEnabled(True)
             self.table.blockSignals(False)
             self.applying_column_layout = previous_column_layout
             self.update_selection_status()
             self.update_pager()
             self.btn_columns.setEnabled(bool(self.fields))
         if self.table.columnCount() == len(self.fields):
-            self.refresh_statistics()
+            # Defer queueing statistics_task until query_task finishes retiring in QgsTaskManager.
+            self.schedule_statistics_refresh()
         elif self.btn_statistics.isChecked():
+            self.statistics_refresh_timer.stop()
             self.cancel_statistics()
             self.statistics_strip.set_state("error", message=self.status.text())
+        if isinstance(self.nearby_preview_dialog, NearbyPreviewPanel) and self.nearby_preview_dialog.layer == layer:
+            band_token = (self.query_version, id(self.result_ids))
+            if getattr(self.nearby_preview_dialog, "_band_result_token", None) != band_token:
+                self.nearby_preview_dialog.refresh_feature_bands()
         if self.pending_preview_focus and not self.selection_filter_timer.isActive():
             layer_id, fid = self.pending_preview_focus
             self.pending_preview_focus = None
             if layer.id() == layer_id and fid in layer.selectedFeatureIds():
                 self.focus_preview_feature(layer, fid)
 
+    def can_select_preview_feature(self, layer, fid):
+        """Restrict preview clicks to features in the table while Scope is Visible on map."""
+        if self.current_layer() != layer:
+            return False
+        if self.current_scope() != "visible":
+            return True
+        id_set = self.result_id_set()
+        if id_set is None:
+            self.status.setText("Wait for Visible on map results to finish loading before selecting from the preview.")
+            return False
+        if fid not in id_set:
+            self.status.setText("Only features in the current Visible on map table can be selected from Features Preview.")
+            return False
+        return True
+
     def focus_preview_feature(self, layer, fid):
         """Show the clicked preview feature without changing active filters."""
         if self.current_layer() != layer:
             return
-        if self.result_ids is None or self.selection_filter_timer.isActive():
+        id_set = self.result_id_set()
+        if id_set is None or self.selection_filter_timer.isActive():
             self.pending_preview_focus = (layer.id(), fid)
             return
-        try:
-            position = self.result_ids.index(fid)
-        except ValueError:
+        if fid not in id_set:
             self.status.setText('Selected feature is outside the current table filters.')
             return
+        position = self.result_ids.index(fid)
         size = self.page_size.currentData()
         page = position // size if size else 0
         if page != self.page:
@@ -3581,7 +2434,7 @@ class FinderDialog(QDialog):
         self.update_undo_buttons()
         self.update_delete_button()
 
-    def sync_edit_state(self):
+    def sync_edit_state(self, *args):
         """Mirror QGIS: checkbox is on when the layer is in edit mode."""
         layer = self.current_layer()
         can_edit, reason = self.attribute_editability()
@@ -3727,8 +2580,8 @@ class FinderDialog(QDialog):
         if fid is None or col >= len(self.fields):
             return
         fld = layer.fields()[col]
-        feat = layer.getFeature(fid)
-        old = feat.attributes()[col] if feat.isValid() and col < len(feat.attributes()) else None
+        feat = next(layer.getFeatures(_attribute_request([fid], [col])), None)
+        old = feat.attributes()[col] if feat is not None and feat.isValid() and col < len(feat.attributes()) else None
         old_text = attribute_text(old)
         ok, err = False, ""
         command_started = False
@@ -3759,7 +2612,8 @@ class FinderDialog(QDialog):
             self.own_edit = False
             self.update_undo_buttons()
         if ok:
-            self.invalidate_nearby_after_layer_change()
+            field_name = fld.name()
+            self.invalidate_nearby_after_attribute_edit(field_name)
             changed = layer.editBuffer().changedAttributeValues().get(fid, {}) if layer.editBuffer() else {}
             self.table.blockSignals(True)
             try:
@@ -3768,13 +2622,15 @@ class FinderDialog(QDialog):
                 item.setData(NULL_ROLE, new is None or new == NULL)
             finally:
                 self.table.blockSignals(False)
-            self.status.setText("Changed {} (not saved yet, click Save edits)".format(fld.name()))
-            self.refresh_lists_only()
-            self.resize_wrapped_rows()
-            # The edited value may change filter membership or sort order even
-            # when statistics are hidden. Rebuild after this signal returns.
-            self.invalidate_results()
-            self.timer.start()
+            self.status.setText("Changed {} (not saved yet, click Save edits)".format(field_name))
+            self.refresh_lists_only(edited_field=field_name)
+            self.resize_table_row(row, col)
+            if self._edit_requires_requery(field_name):
+                self.invalidate_results()
+                self.timer.start()
+            elif self.btn_statistics.isChecked():
+                self.statistics_key = None
+                self.schedule_statistics_refresh()
         else:
             self.table.blockSignals(True)
             item.setText(old_text)
@@ -3782,9 +2638,32 @@ class FinderDialog(QDialog):
             self.table.blockSignals(False)
             self.status.setText("Not changed: " + err)
 
-    def refresh_lists_only(self):
-        """Refresh choices without replacing a cell currently being edited."""
-        self.reload_value_lists()
+    def _edit_requires_requery(self, field_name):
+        """Return True when editing field_name may change matching FIDs or sort order."""
+        if self.result_ids is None or self.query_task is not None or self.timer.isActive():
+            return True
+        if self.edit.text().strip() or self.sort_field == field_name or self.current_scope() == "edited":
+            return True
+        for filter_row in self.filter_rows:
+            if filter_row.field.currentText() != field_name:
+                continue
+            try:
+                if self.part_expr(filter_row.field, filter_row.value):
+                    return True
+            except ValueError:
+                return True
+        return False
+
+    def refresh_lists_only(self, edited_field=None):
+        """Refresh relevant filter choices without launching tasks for unrelated closed popups."""
+        if edited_field is None:
+            self.reload_value_lists()
+            return
+        for filter_row in self.filter_rows:
+            if filter_row.field.currentText() == edited_field and filter_row.widget.isVisible():
+                self._reload_filter_row_values(filter_row)
+            else:
+                self._stale_value_rows.add(id(filter_row))
 
     def save_edits(self):
         layer = self.current_layer()
@@ -3882,479 +2761,33 @@ class FinderDialog(QDialog):
         self.btn_fields.setEnabled(can_add or can_delete_field)
 
     def add_field(self):
-        layer = self.current_layer()
-        if not layer or not layer.isEditable() or layer.readOnly():
-            return
-        provider = layer.dataProvider()
-        if not provider or not provider.capabilities() & QgsVectorDataProvider.Capability.AddAttributes:
-            self.status.setText("This layer does not support adding fields.")
-            return
-        dialog = AddFieldDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            dialog.deleteLater()
-            return
-        specs = dialog.field_specs()
-        dialog.deleteLater()
-        names = [spec[0] for spec in specs]
-        if not names or any(not name for name in names):
-            QMessageBox.warning(self, "Add field", "Enter a name for each field.")
-            return
-        if self.current_layer() != layer or not layer.isEditable():
-            self.status.setText("Layer or edit mode changed. Field was not added.")
-            return
-        if len({item.casefold() for item in names}) != len(names) or any(layer.fields().lookupField(item) >= 0 for item in names):
-            QMessageBox.warning(self, "Add field", "Field names must be unique and must not already exist.")
-            return
-        if any(length and precision >= length for _, _, length, precision in specs):
-            QMessageBox.warning(self, "Add field", "Decimal precision must be smaller than the field length.")
-            return
-        command_open = False
-        error = None
-        self.own_edit = True
-        try:
-            layer.beginEditCommand("QuickTable: add {} field(s)".format(len(names)))
-            command_open = True
-            for field_name, field_type, length, precision in specs:
-                type_name = ""
-                if layer.providerType() == "postgres":
-                    type_name = {
-                        QMetaType.Type.QString: "varchar" if length else "text",
-                        QMetaType.Type.Int: "int4",
-                        QMetaType.Type.LongLong: "int8",
-                        QMetaType.Type.Double: "numeric" if length else "float8",
-                        QMetaType.Type.QDate: "date",
-                        QMetaType.Type.Bool: "bool",
-                    }[field_type]
-                    if type_name == "text":
-                        # PostgreSQL reports unbounded text with typmod -1.
-                        length = -1
-                if not layer.addAttribute(QgsField(field_name, field_type, type_name, len=length, prec=precision)):
-                    raise RuntimeError("The data source rejected field '{}' or its type.".format(field_name))
-            layer.updateFields()
-            layer.endEditCommand()
-            command_open = False
-        except Exception as exc:
-            error = str(exc)
-            if command_open:
-                layer.destroyEditCommand()
-        finally:
-            self.own_edit = False
-        if error is None:
-            key = self.column_settings_key()
-            hidden = QSettings().value(key, []) if key else []
-            if isinstance(hidden, str):
-                hidden = [hidden]
-            if key and any(item in (hidden or []) for item in names):
-                QSettings().setValue(key, [item for item in hidden if item not in names])
-            if key:
-                # Refit regular columns when the schema grows, including widths
-                # saved by older versions which stretched the last column.
-                wrapped = self.wrapped_fields()
-                widths = self.saved_column_widths(key)
-                for field_name in list(widths):
-                    if field_name not in wrapped:
-                        del widths[field_name]
-                self.pending_column_widths[key] = widths
-                self.column_layout_timer.start()
-            self.pending_added_field = (layer.id(), names[0])
-        self.soft_refresh()
-        self.status.setText("Could not add field: " + error if error else
-                            "Added {} field(s); save edits to commit.".format(len(names)))
+        table_actions.add_field(self)
 
-    @staticmethod
-    def deletable_field_indices(layer):
-        fields = layer.fields()
-        primary_keys = set(layer.primaryKeyAttributes())
-        form = layer.editFormConfig()
-        return [index for index in range(fields.count())
-                if index not in primary_keys and fields.fieldOrigin(index) in (QgsFields.FieldOrigin.OriginProvider, QgsFields.FieldOrigin.OriginEdit)
-                and not form.readOnly(index)
-                and not (hasattr(fields[index], "isReadOnly") and fields[index].isReadOnly())]
+    deletable_field_indices = staticmethod(table_actions.deletable_field_indices)
 
     def delete_field(self):
-        layer = self.current_layer()
-        provider = layer.dataProvider() if layer else None
-        if (not layer or not layer.isEditable() or layer.readOnly() or not provider
-                or not provider.capabilities() & QgsVectorDataProvider.Capability.DeleteAttributes):
-            self.status.setText("This layer does not allow deleting fields in the current edit mode.")
-            return
-        indices = self.deletable_field_indices(layer)
-        if not indices:
-            self.status.setText("No deletable fields are available.")
-            return
-        names = [layer.fields()[i].name() for i in indices]
-        dialog = DeleteFieldsDialog(self, names)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            dialog.deleteLater()
-            return
-        selected = dialog.selected_names()
-        dialog.deleteLater()
-        if not selected:
-            self.status.setText("No fields selected.")
-            return
-        question = ("Delete {} field(s) from '{}'?\n\n{}\n\nThis removes their values from every feature. "
-                    "The deletion remains pending until Save edits; you can undo it before saving.").format(
-                        len(selected), layer.name(), "\n".join(selected))
-        if QMessageBox.question(self, "Delete fields", question, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                                QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
-            return
-        indices = [layer.fields().indexFromName(name) for name in selected]
-        allowed = set(self.deletable_field_indices(layer))
-        if (self.current_layer() != layer or not layer.isEditable() or layer.readOnly()
-                or any(index < 0 or index not in allowed for index in indices)
-                or not layer.dataProvider().capabilities() & QgsVectorDataProvider.Capability.DeleteAttributes):
-            self.status.setText("The layer or fields changed. Field deletion canceled.")
-            return
-        command_open = False
-        error = None
-        self.own_edit = True
-        try:
-            layer.beginEditCommand("QuickTable: delete {} field(s)".format(len(selected)))
-            command_open = True
-            for index in sorted(indices, reverse=True):
-                if not layer.deleteAttribute(index):
-                    raise RuntimeError("The data source refused to delete a field.")
-            layer.updateFields()
-            layer.endEditCommand()
-            command_open = False
-        except Exception as exc:
-            error = str(exc)
-            if command_open:
-                layer.destroyEditCommand()
-        finally:
-            self.own_edit = False
-        self.soft_refresh()
-        self.status.setText("Could not delete fields: " + error if error else
-                            "Deleted {} field(s); save edits to commit.".format(len(selected)))
+        table_actions.delete_field(self)
 
     def bulk_edit(self):
-        layer = self.current_layer()
-        fids = list(dict.fromkeys(self.selected_fids()))
-        if not layer or not layer.isEditable() or not fids:
-            return
-        fields = layer.fields()
-        form = layer.editFormConfig()
-        names = [field.name() for i, field in enumerate(fields)
-                 if not form.readOnly(i) and not (hasattr(field, "isReadOnly") and field.isReadOnly())]
-        if not names:
-            self.status.setText("No writable fields available.")
-            return
-        dialog = BulkEditDialog(self, layer, names, fids)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        name = dialog.field.currentText()
-        index = layer.fields().indexFromName(name)
-        value = dialog.value
-        dialog.deleteLater()
-        if (self.current_layer() != layer or not layer.isEditable() or set(self.selected_fids()) != set(fids)
-                or index < 0 or layer.editFormConfig().readOnly(index)
-                or (hasattr(layer.fields()[index], "isReadOnly") and layer.fields()[index].isReadOnly())):
-            self.status.setText("Layer or selection changed. Bulk edit canceled.")
-            return
-        request = QgsFeatureRequest().setFilterFids(fids)
-        current = {feature.id(): feature[index] for feature in layer.getFeatures(request)}
-        if current != dialog.original_values:
-            self.status.setText("Values changed after the preview. Bulk edit canceled.")
-            return
-        error = None
-        command_open = False
-        self.own_edit = True
-        try:
-            layer.beginEditCommand("QuickTable: bulk edit {}".format(name))
-            command_open = True
-            for fid in fids:
-                validate_change(layer, fid, index, value)
-                if not layer.changeAttributeValue(fid, index, value):
-                    raise RuntimeError("The layer refused a change to feature {}".format(fid))
-            layer.endEditCommand()
-            command_open = False
-        except Exception as exc:
-            error = str(exc)
-            if command_open:
-                layer.destroyEditCommand()
-        finally:
-            self.own_edit = False
-        self.soft_refresh()
-        self.status.setText("Bulk edit failed: " + error if error else
-                            "Changed {} feature(s); save to commit.".format(len(fids)))
+        table_actions.bulk_edit(self, _attribute_request)
 
     def apply_multi_replacements(self, layer, names, originals, changes, entire_layer=False):
-        indices = [layer.fields().indexFromName(name) for name in names]
-        if (self.current_layer() != layer or not layer.isEditable() or layer.readOnly()
-                or any(index < 0 or layer.fields()[index].type() != QMetaType.Type.QString
-                       or layer.editFormConfig().readOnly(index)
-                       or (hasattr(layer.fields()[index], "isReadOnly") and layer.fields()[index].isReadOnly())
-                       for index in indices)):
-            self.status.setText("The layer or columns changed. Replace canceled.")
-            return False
-        request = QgsFeatureRequest()
-        if not entire_layer:
-            request.setFilterFids(list(originals))
-        current = {feature.id(): {index: feature[index] for index in indices}
-                   for feature in layer.getFeatures(request)}
-        if current != originals:
-            self.status.setText("Values or features changed after the preview. Replace canceled.")
-            return False
-        opened = False
-        self.own_edit = True
-        try:
-            layer.beginEditCommand("QuickTable: find and replace")
-            opened = True
-            for fid, values in changes.items():
-                for index, value in values.items():
-                    converted = convert_attribute(layer.fields()[index], value)
-                    if not layer.changeAttributeValue(fid, index, converted):
-                        raise ValueError("The layer refused feature {}".format(fid))
-            # Validate complete records after every proposed change has been
-            # staged, so cross-field constraints see the final values.
-            for fid, values in changes.items():
-                index = next(iter(values))
-                validate_change(layer, fid, index, layer.getFeature(fid)[index])
-            layer.endEditCommand()
-            opened = False
-        except Exception as exc:
-            if opened:
-                layer.destroyEditCommand()
-            self.status.setText("Replace failed: {}".format(exc))
-            return False
-        finally:
-            self.own_edit = False
-        self.soft_refresh()
-        self.status.setText("Changed {} feature(s); save edits to commit.".format(len(changes)))
-        return True
+        return table_actions.apply_multi_replacements(
+            self, layer, names, originals, changes, _attribute_request, entire_layer=entire_layer)
 
     def apply_replacements(self, layer, name, originals, changes):
-        index = layer.fields().indexFromName(name)
-        if (self.current_layer() != layer or not layer.isEditable() or layer.readOnly() or index < 0
-                or field_kind(layer.fields()[index]) != "text" or layer.editFormConfig().readOnly(index)
-                or (hasattr(layer.fields()[index], "isReadOnly") and layer.fields()[index].isReadOnly())):
-            self.status.setText("The layer or field changed. Replace canceled.")
-            return False
-        current = {feature.id(): feature[index] for feature in
-                   layer.getFeatures(QgsFeatureRequest().setFilterFids(list(originals)))}
-        if current != originals:
-            self.status.setText("Values changed after the preview. Replace canceled.")
-            return False
-        command_open = False
-        self.own_edit = True
-        try:
-            layer.beginEditCommand("QuickTable: find and replace {}".format(name))
-            command_open = True
-            for fid, value in changes.items():
-                converted = convert_attribute(layer.fields()[index], value)
-                validate_change(layer, fid, index, converted)
-                if not layer.changeAttributeValue(fid, index, converted):
-                    raise ValueError("The layer refused feature {}".format(fid))
-            layer.endEditCommand()
-            command_open = False
-        except Exception as exc:
-            if command_open:
-                layer.destroyEditCommand()
-            self.status.setText("Replace failed: {}".format(exc))
-            return False
-        finally:
-            self.own_edit = False
-        self.soft_refresh()
-        self.status.setText("Changed {} feature(s); save edits to commit.".format(len(changes)))
-        return True
+        return table_actions.apply_replacements(self, layer, name, originals, changes)
 
     def find_replace(self):
-        layer = self.current_layer()
-        if layer is None or not layer.isEditable():
-            self.status.setText("Enable edit mode before replacing.")
-            return
-        names = [field.name() for i, field in enumerate(layer.fields())
-                 if field.type() == QMetaType.Type.QString and not layer.editFormConfig().readOnly(i)
-                 and not (hasattr(field, "isReadOnly") and field.isReadOnly())]
-        if not names:
-            self.status.setText("No writable text fields are available.")
-            return
-        dialog = FindReplaceDialog(self, layer, names)
-        dialog.exec()
-        dialog.deleteLater()
+        table_actions.find_replace(self)
 
-    @staticmethod
-    def autofill_values(field, mode, text, step_text, count):
-        if mode == "null":
-            return [NULL] * count
-        if mode == "same":
-            return [FinderDialog.convert(field, text)] * count
-        if mode == "repeat":
-            if not text:
-                raise ValueError("Enter at least one value to repeat.")
-            values = [FinderDialog.convert(field, value) for value in text.split("\n")]
-            return [values[i % len(values)] for i in range(count)]
-        if mode != "sequence" or field_kind(field) not in ("integer", "number"):
-            raise ValueError("Number sequences require a numeric field.")
-        try:
-            start, step = Decimal(text.strip()), Decimal(step_text.strip())
-            if not start.is_finite() or not step.is_finite():
-                raise ValueError("Start and step must be finite numbers.")
-            output = []
-            limits = {QMetaType.Type.Int: (-(2**31), 2**31 - 1), QMetaType.Type.UInt: (0, 2**32 - 1),
-                      QMetaType.Type.LongLong: (-(2**63), 2**63 - 1), QMetaType.Type.ULongLong: (0, 2**64 - 1)}
-            for i in range(count):
-                number = start + step * i
-                if field.type() in limits:
-                    if number != number.to_integral_value():
-                        raise ValueError("A whole-number field requires whole-number values.")
-                    low, high = limits[field.type()]
-                    if not low <= number <= high:
-                        raise ValueError("A generated number is outside the field's range.")
-                    output.append(int(number))
-                else:
-                    output.append(FinderDialog.convert(field, format(number, "f")))
-            return output
-        except (InvalidOperation, OverflowError):
-            raise ValueError("Enter valid start and step numbers.")
+    autofill_values = staticmethod(table_actions.autofill_values)
 
     def autofill(self):
-        layer = self.current_layer()
-        selected_fids = list(dict.fromkeys(self.selected_fids()))
-        page_fids = list(dict.fromkeys(self.all_fids()))
-        if not layer or not layer.isEditable() or not page_fids:
-            return
-        fields = layer.fields()
-        form = layer.editFormConfig()
-        names = [field.name() for i, field in enumerate(fields)
-                 if not form.readOnly(i) and not (hasattr(field, "isReadOnly") and field.isReadOnly())]
-        if not names:
-            self.status.setText("No writable fields available.")
-            return
-        dialog = AutofillDialog(self, names, len(selected_fids), len(page_fids))
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            dialog.deleteLater()
-            return
-        name = dialog.field.currentText()
-        scope = dialog.scope.currentData()
-        fids = selected_fids if scope == "selected" else page_fids
-        mode = dialog.mode.currentData()
-        text = dialog.values.toPlainText()
-        step = dialog.step.text()
-        dialog.deleteLater()
-        if not fids:
-            self.status.setText("Select rows or choose the entire current page for autofill.")
-            return
-        index = fields.indexFromName(name)
-        field = fields[index]
-        try:
-            values = self.autofill_values(field, mode, text, step, len(fids))
-        except (ValueError, OverflowError) as exc:
-            QMessageBox.warning(self, "Autofill", "Invalid values: {}".format(exc))
-            return
-        features = {feature.id(): feature for feature in layer.getFeatures(QgsFeatureRequest().setFilterFids(fids))}
-        if len(features) != len(fids):
-            self.status.setText("A selected feature is unavailable. Autofill canceled.")
-            return
-        preview = []
-        for fid, value in list(zip(fids, values))[:10]:
-            old = features[fid][index]
-            preview.append("{}: {} → {}".format(fid, "NULL" if old is None or old == NULL else str(old),
-                                               "NULL" if value is None or value == NULL else str(value)))
-        if len(fids) > 10:
-            preview.append("… and {} more".format(len(fids) - 10))
-        scope_label = "selected rows" if scope == "selected" else "all rows on this page"
-        message = "Fill column '{}' for {} rows ({}), in table order?\n\n{}\n\nChanges remain unsaved until Save edits.".format(
-            name, len(fids), scope_label, "\n".join(preview))
-        if QMessageBox.question(self, "Confirm autofill", message,
-                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
-            return
-        current_fids = self.selected_fids() if scope == "selected" else self.all_fids()
-        if (self.current_layer() != layer or not layer.isEditable() or current_fids != fids
-                or index >= layer.fields().count() or layer.fields()[index].name() != name
-                or layer.editFormConfig().readOnly(index)
-                or (hasattr(layer.fields()[index], "isReadOnly") and layer.fields()[index].isReadOnly())):
-            self.status.setText("Layer, field or row order changed. Autofill canceled.")
-            return
-        current = {feature.id(): feature for feature in layer.getFeatures(QgsFeatureRequest().setFilterFids(fids))}
-        if len(current) != len(fids) or any(current[fid][index] != features[fid][index] for fid in fids):
-            self.status.setText("Values changed after the preview. Autofill canceled.")
-            return
-        error, command_open = None, False
-        self.own_edit = True
-        try:
-            layer.beginEditCommand("QuickTable: autofill {}".format(name))
-            command_open = True
-            for fid, value in zip(fids, values):
-                validate_change(layer, fid, index, value)
-                if not layer.changeAttributeValue(fid, index, value):
-                    raise RuntimeError("The layer refused a change to feature {}".format(fid))
-            layer.endEditCommand()
-            command_open = False
-        except Exception as exc:
-            error = str(exc)
-            if command_open:
-                layer.destroyEditCommand()
-        finally:
-            self.own_edit = False
-        self.soft_refresh()
-        self.status.setText("Autofill failed: " + error if error else
-                            "Filled {} row(s); save to commit.".format(len(fids)))
+        table_actions.autofill(self, _attribute_request)
 
     def delete_selected(self):
-        allowed, reason = self.deletion_availability()
-        if not allowed:
-            self.status.setText(reason)
-            return
-        layer = self.current_layer()
-        layer_id = layer.id()
-        fids = list(dict.fromkeys(self.selected_fids()))
-        question = QMessageBox(self)
-        question.setWindowTitle("Delete selected features")
-        question.setIcon(QMessageBox.Icon.Warning)
-        question.setTextFormat(Qt.TextFormat.PlainText)
-        question.setText("Delete {} selected feature(s) from '{}'?".format(len(fids), layer.name()))
-        question.setInformativeText(
-            "This deletes the full features, including their geometry.\n"
-            "The deletion stays unsaved until you click Save edits. Discard edits rolls back all unsaved changes.")
-        delete = question.addButton("Delete", QMessageBox.ButtonRole.DestructiveRole)
-        cancel = question.addButton(QMessageBox.StandardButton.Cancel)
-        question.setDefaultButton(cancel)
-        question.setEscapeButton(cancel)
-        question.exec()
-        confirmed = question.clickedButton() == delete
-        question.deleteLater()
-        if not confirmed:
-            return
-        layer = self.current_layer()
-        if layer is None or layer.id() != layer_id:
-            self.status.setText("The current layer changed. Deletion canceled.")
-            return
-        allowed, reason = self.deletion_availability(fids)
-        if not allowed:
-            self.status.setText(reason)
-            return
-        self.timer.stop()
-        self.search_timer.stop()
-        self.filter_timer.stop()
-        self.pending_cascade_start = None
-        command_open = False
-        error = None
-        self.own_edit = True
-        try:
-            layer.beginEditCommand("QuickTable: delete selected features")
-            command_open = True
-            if not layer.deleteFeatures(fids):
-                raise RuntimeError("The layer refused the deletion")
-            layer.endEditCommand()
-            command_open = False
-        except Exception as exc:
-            error = str(exc)
-            if command_open:
-                try:
-                    layer.destroyEditCommand()
-                except Exception as undo_error:
-                    error += "; could not undo this operation: " + str(undo_error)
-        finally:
-            self.own_edit = False
-        if error:
-            self.soft_refresh()
-            self.status.setText("Could not delete: " + error)
-            return
-        self.unselect_all()
-        self.pending_notice = "Deleted {} feature(s). Not saved yet — click Save edits to commit.".format(len(fids))
-        self.soft_refresh()
-        self.status.setText(self.pending_notice)
+        table_actions.delete_selected(self)
 
     # ---------- map actions ----------
     def select_table_fids(self, fids):
@@ -4390,7 +2823,7 @@ class FinderDialog(QDialog):
             return
         selected = set(layer.selectedFeatureIds())
         self.pending_selection = selected
-        if self.selected_only_cb.isChecked():
+        if self.current_scope() == "selected":
             self.selected_scope_ids = tuple(sorted(selected))
             self.page = 0
             self.selection_filter_timer.start()
@@ -4404,16 +2837,9 @@ class FinderDialog(QDialog):
 
     def on_row_selection(self):
         layer = self.current_layer()
-        fids = self.selected_fids()
+        if layer:
+            self.set_map_selection(layer, self.selected_fids())
         self.update_selection_status()
-        if not layer:
-            return
-        self.set_map_selection(layer, fids)
-        if not fids or not layer.isSpatial():
-            return
-        canvas = self.iface.mapCanvas()
-        canvas.zoomToSelected(layer)
-        canvas.flashFeatureIds(layer, fids[:50])
 
     def select_all(self):
         layer = self.current_layer()
@@ -4444,6 +2870,19 @@ class FinderDialog(QDialog):
         self.table.setToolTip("Click rows to add or remove them from the selection." if enabled else
                              "Ctrl-click adds/removes rows; Shift-click selects a range.")
 
+    def update_zoom_button(self):
+        layer = self.current_layer()
+        spatial = bool(layer and layer.isSpatial())
+        selected = layer.selectedFeatureCount() if layer else 0
+        self.btn_zoom.setText("Zoom to selected")
+        self.btn_zoom.setEnabled(spatial and selected > 0)
+        if not spatial:
+            self.btn_zoom.setToolTip("Zooming requires a layer with geometry")
+        elif selected > 0:
+            self.btn_zoom.setToolTip("Zoom the map to the selected features")
+        else:
+            self.btn_zoom.setToolTip("Select one or more features in the table or map to zoom")
+
     def update_selection_status(self):
         layer = self.current_layer()
         self.btn_clear_filters.setEnabled(layer is not None)
@@ -4455,15 +2894,15 @@ class FinderDialog(QDialog):
         self.btn_copy.setEnabled(self.table.rowCount() > 0)
         self.btn_csv.setEnabled(self.table.rowCount() > 0)
         self.btn_unselect.setEnabled(layer is not None)
-        self.btn_zoom.setEnabled(bool(layer and layer.isSpatial() and self.table.rowCount()))
+        self.update_zoom_button()
         self.update_delete_button()
 
-    def zoom_all(self):
+    def zoom_selected(self):
+        """Zoom the active QGIS map canvas to the currently selected features."""
         layer = self.current_layer()
-        fids = self.all_fids()
-        if layer and layer.isSpatial() and fids:
-            self.select_all()
-            self.iface.mapCanvas().zoomToSelected(layer)
+        if not (layer and layer.isSpatial() and layer.selectedFeatureCount() > 0):
+            return
+        self.iface.mapCanvas().zoomToSelected(layer)
 
     # ---------- export ----------
     def table_rows(self):
@@ -4471,7 +2910,7 @@ class FinderDialog(QDialog):
         columns = [c for c in range(len(self.fields)) if not self.table.isColumnHidden(c)]
         out = [[self.fields[c] for c in columns]]
         for r in rows:
-            out.append([self.table.item(r, c).text() for c in columns])
+            out.append([self.table.item(r, c).text() if self.table.item(r, c) is not None else "" for c in columns])
         return out
 
     def copy_rows(self):
@@ -4535,29 +2974,88 @@ class QuickFilter:
         self.iface = iface
         self.dlg = None
         self.action = None
+        self.scope_menu = None
+        self.scope_actions = {}
+        self.menu_actions = {}
+
+    def _build_scope_actions(self, parent):
+        actions = {}
+        for scope, label, tooltip in SCOPE_LAUNCH_OPTIONS:
+            action = QAction(scope_launch_icon(scope), label, parent)
+            action.setToolTip(tooltip)
+            action.setData(scope)
+            action.triggered.connect(lambda _checked=False, target=scope: self.show(scope=target))
+            actions[scope] = action
+        return actions
 
     def initGui(self):
         icon = plugin_icon()
-        self.action = QAction(icon, "QuickTable", self.iface.mainWindow())
-        self.action.triggered.connect(self.show)
-        self.iface.addPluginToMenu("&QuickTable", self.action)
+        main_window = self.iface.mainWindow()
+        self.action = QAction(icon, "QuickTable", main_window)
+        self.action.setToolTip("QuickTable — Open table (use arrow to choose scope)")
+        self.action.triggered.connect(lambda _checked=False: self.show())
+
+        self.scope_menu = QMenu(main_window)
+        self.scope_actions = self._build_scope_actions(self.scope_menu)
+        for action in self.scope_actions.values():
+            self.scope_menu.addAction(action)
+        self.scope_menu.aboutToShow.connect(self.update_scope_menu_state)
+        self.action.setMenu(self.scope_menu)
+
+        self.menu_actions = self._build_scope_actions(main_window)
+        for action in self.menu_actions.values():
+            self.iface.addPluginToMenu("&QuickTable", action)
+
         self.iface.addToolBarIcon(self.action)
+        toolbar = self.iface.pluginToolBar() if hasattr(self.iface, "pluginToolBar") else None
+        button = toolbar.widgetForAction(self.action) if toolbar is not None and hasattr(toolbar, "widgetForAction") else None
+        if isinstance(button, QToolButton):
+            button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
+    def update_scope_menu_state(self):
+        visible_action = self.scope_actions.get("visible")
+        if visible_action is None:
+            return
+        layer = self.dlg.current_layer() if self.dlg is not None else None
+        if layer is None and hasattr(self.iface, "activeLayer"):
+            layer = self.iface.activeLayer()
+        non_spatial_vector = (
+            layer is not None
+            and hasattr(layer, "type")
+            and layer.type() == QgsMapLayer.LayerType.VectorLayer
+            and hasattr(layer, "isSpatial")
+            and not layer.isSpatial()
+        )
+        visible_action.setEnabled(not non_spatial_vector)
 
     def unload(self):
-        self.iface.removePluginMenu("&QuickTable", self.action)
-        self.iface.removeToolBarIcon(self.action)
+        for action in self.menu_actions.values():
+            self.iface.removePluginMenu("&QuickTable", action)
+        self.menu_actions.clear()
+        if self.action is not None:
+            self.iface.removeToolBarIcon(self.action)
+            self.action.setMenu(None)
+        self.scope_actions.clear()
+        if self.scope_menu is not None:
+            self.scope_menu.deleteLater()
+            self.scope_menu = None
+        self.action = None
         if self.dlg:
             self.dlg.shutdown()
             self.dlg = None
 
-    def show(self):
+    def show(self, scope=None):
+        if isinstance(scope, bool):
+            scope = None
         created = self.dlg is None
         if self.dlg is None:
             self.dlg = FinderDialog(self.iface)
             QgsApplication.instance().aboutToQuit.connect(self.dlg.close)
         # Restoring/raising the existing window must not reload its filter controls.
         if created or self.dlg.current_layer() is None:
-            self.dlg.refresh()
+            self.dlg.refresh(initial_scope=scope)
+        elif scope is not None:
+            self.dlg.set_scope(scope, run=True)
         if self.dlg.isMinimized():
             self.dlg.showNormal()
         self.dlg.show()
